@@ -460,7 +460,7 @@ def update_installed_addons(
     return results
 
 
-def handshake_addon(blender_connection) -> AddonHandshake:
+def handshake_addon(blender_connection, timeout: float = 5.0) -> AddonHandshake:
     """
     Query a connected Blender addon for protocol version.
 
@@ -468,7 +468,7 @@ def handshake_addon(blender_connection) -> AddonHandshake:
     via execute_code fallbacks elsewhere).
     """
     try:
-        info = blender_connection.send_command("get_addon_info")
+        info = blender_connection.send_command("get_addon_info", timeout=timeout)
         if not isinstance(info, dict):
             return AddonHandshake(
                 up_to_date=False,
@@ -506,6 +506,8 @@ def handshake_addon(blender_connection) -> AddonHandshake:
             source="native",
             warning=warning,
         )
+    except TimeoutError:
+        raise
     except Exception as e:
         msg = str(e).lower()
         if "unknown command" in msg or "get_addon_info" in msg:
