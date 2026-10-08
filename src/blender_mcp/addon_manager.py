@@ -21,7 +21,7 @@ from pathlib import Path
 logger = logging.getLogger("BlenderMCPServer")
 
 # Must match ADDON_PROTOCOL_VERSION in addon.py / bundled/addon.py
-EXPECTED_ADDON_PROTOCOL_VERSION = 17
+EXPECTED_ADDON_PROTOCOL_VERSION = 19
 
 PACKAGE = "roxy-blender-mcp"
 ADDON_DISPLAY_NAME = "Roxy Blender MCP"

@@ -73,43 +73,9 @@ For many small things over a surface - grass clumps, stones, leaves, litter, gra
 use Geometry Nodes instead of placing thousands of objects. Put the source objects (a few
 variations) in their own collection, hidden from view, and scatter them over the ground:
 
-```python
-def scatter(target, collection, density=5.0, scale=(0.6, 1.4), seed=0, name="Scatter"):
-    """Scatter random copies of the objects in `collection` over `target`'s faces.
+The addon provides these as `roxy.<name>` inside execute_blender_code (addon protocol 18+), so call them directly - don't paste or redefine them. If `roxy` is undefined, the Blender addon is outdated: get_addon_status says how to update it.
 
-    density is copies per square metre. The originals in the collection are the
-    sources: keep them out of view (exclude or hide that collection).
-    """
-    ng = bpy.data.node_groups.new(name, "GeometryNodeTree")
-    ng.interface.new_socket("Geometry", in_out="INPUT", socket_type="NodeSocketGeometry")
-    ng.interface.new_socket("Geometry", in_out="OUTPUT", socket_type="NodeSocketGeometry")
-    n, l = ng.nodes, ng.links
-    gi = n.new("NodeGroupInput"); go = n.new("NodeGroupOutput")
-    dist = n.new("GeometryNodeDistributePointsOnFaces")
-    dist.inputs["Density"].default_value = density
-    dist.inputs["Seed"].default_value = seed
-    info = n.new("GeometryNodeCollectionInfo")
-    info.inputs["Collection"].default_value = collection
-    info.inputs["Separate Children"].default_value = True
-    info.inputs["Reset Children"].default_value = True
-    inst = n.new("GeometryNodeInstanceOnPoints")
-    inst.inputs["Pick Instance"].default_value = True
-    rot = n.new("FunctionNodeRandomValue"); rot.data_type = "FLOAT_VECTOR"
-    rot.inputs["Max"].default_value = (0.0, 0.0, 6.2832)      # any heading, stays upright
-    size = n.new("FunctionNodeRandomValue"); size.data_type = "FLOAT"
-    size.inputs["Min"].default_value, size.inputs["Max"].default_value = scale
-    join = n.new("GeometryNodeJoinGeometry")
-    l.new(gi.outputs["Geometry"], dist.inputs["Mesh"])
-    l.new(dist.outputs["Points"], inst.inputs["Points"])
-    l.new(info.outputs["Instances"], inst.inputs["Instance"])
-    l.new(rot.outputs["Value"], inst.inputs["Rotation"])
-    l.new(size.outputs["Value"], inst.inputs["Scale"])
-    l.new(gi.outputs["Geometry"], join.inputs["Geometry"])
-    l.new(inst.outputs["Instances"], join.inputs["Geometry"])
-    l.new(join.outputs["Geometry"], go.inputs["Geometry"])
-    mod = target.modifiers.new(name, "NODES"); mod.node_group = ng
-    return mod
-```
+- `roxy.scatter(target, collection, density=5.0, scale=(0.6, 1.4), seed=0, name='Scatter')` - Scatter random copies of the objects in `collection` over `target`'s faces.
 
 - Density per square metre: grass clumps 20-100, pebbles 5-30, fallen leaves 10-50, litter 0.5-3,
   rocks 0.1-1.

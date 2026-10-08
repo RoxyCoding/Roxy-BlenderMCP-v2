@@ -68,11 +68,7 @@ def _extract_tool_params(kwargs: dict, capture_code: bool) -> dict:
         'asset_id', 'asset_type', 'resolution', 'file_format',  # Polyhaven
         'object_name', 'texture_id',  # set_texture
         'uid', 'target_size',  # Sketchfab
-        'text_prompt', 'bbox_condition',  # Hyper3D
-        'input_image_paths', 'input_image_urls',  # Hyper3D images
-        'input_image_url',  # Hunyuan
-        'name', 'task_uuid', 'request_id', 'zip_file_url',  # Import
-        'prompt', 'image', 'provider', 'quality', 'job',  # generate_3d
+        'name',  # Import
         'mode', 'target', 'views', 'shading',  # look
     ]
     

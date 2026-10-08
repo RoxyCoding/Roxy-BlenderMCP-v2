@@ -5,7 +5,7 @@ user's Blender process — that is the product feature, so by default nothing is
 validated. Setting BLENDER_MCP_SAFE_MODE=1 turns on this validator in the MCP
 server, so a script authored by the model must clear it before a byte crosses
 the socket. The threat it addresses is prompt injection: third-party text
-(asset names and descriptions from Poly Haven, Sketchfab, Hyper3D) flows into
+(asset names and descriptions from Poly Haven, ambientCG, Sketchfab) flows into
 the model's context, and injected instructions could steer the model into
 writing hostile code that a user approves without reading.
 
@@ -96,6 +96,10 @@ class SandboxViolation(Exception):
 #: The only importable modules. None of them exposes process, filesystem, or
 #: network primitives. `json` is included deliberately: it can parse and
 #: serialize, but it cannot open a file on its own.
+# Names execute_code puts in every script's namespace besides imports: the
+# addon's `roxy` helpers (functions only, no modules).
+INJECTED_NAMES: Final[frozenset[str]] = frozenset({"roxy"})
+
 ALLOWED_MODULES: Final[frozenset[str]] = frozenset(
     {
         "bpy",
@@ -540,7 +544,9 @@ class _Validator(ast.NodeVisitor):
     """
 
     def __init__(self) -> None:
-        self.imported: set[str] = set()
+        # Names the addon hands every script, treated like imported modules:
+        # usable, never rebindable.
+        self.imported: set[str] = set(INJECTED_NAMES)
         self.bound: set[str] = set()
         #: Names bound by a `def`. Only these (plus builtins, modules, and
         #: from-imports) may be used as a bare call target — see `visit_Call`.

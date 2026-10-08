@@ -549,3 +549,25 @@ for name in ARGS["names"]:
                 "size": [round(hi[i] - lo[i], 3) for i in range(3)]})
 return out
 '''
+
+
+# model_plan(action="verify"): the plan stored on an assembly, and each part's
+# box in the assembly's own space (so moving or turning the whole thing is fine).
+PLAN_STATE = r'''
+import bpy
+from mathutils import Vector
+root = bpy.data.objects.get(ARGS["name"])
+if root is None:
+    return {"error": "no object called " + ARGS["name"]}
+dg = bpy.context.evaluated_depsgraph_get()
+to_local = root.matrix_world.inverted()
+parts = {}
+for x in root.children_recursive:
+    if x.type not in {"MESH", "CURVE", "SURFACE", "FONT", "META", "CURVES"}:
+        continue
+    ev = x.evaluated_get(dg)
+    pts = [to_local @ (ev.matrix_world @ Vector(c)) for c in ev.bound_box]
+    parts[x.name] = [[round(min(p[i] for p in pts), 4) for i in range(3)],
+                     [round(max(p[i] for p in pts), 4) for i in range(3)]]
+return {"plan": root.get("roxy_plan"), "parts": parts}
+'''

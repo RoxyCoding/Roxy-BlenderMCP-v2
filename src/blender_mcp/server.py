@@ -29,6 +29,7 @@ from .addon_manager import (
     check_addon_status_on_startup,
 )
 from . import ambientcg, blender_scripts, context_log, guides, session_rules
+from . import model_plan as model_plans
 from .safe_mode import safe_mode_enabled, validate_code, SandboxViolation, SAFE_MODE_ENV
 from .openai_apps import (
     APP_MIME_TYPE,
@@ -348,6 +349,9 @@ look is how you see your work; use it as much as you need. Images stay in the co
 a smaller max_size keeps long sessions cheap.
 
 Before a risky or sweeping change, checkpoint(action="save"); restore it if the result is worse.
+
+Never model anything with more than one part before model_plan(action="check") passes its
+structure; build from the plan and verify against it.
 
 Real-world buildings, products and everyday items follow Japanese specifications and design
 unless the user names another region; game assets target Unreal Engine 5 unless the user names
@@ -790,6 +794,89 @@ async def execute_blender_code(ctx: Context, code: str, user_prompt: str = "") -
         except (ValueError, KeyError, TypeError):
             return f"Error executing code: {str(e)}"
         return f"Error executing code: {detail.get('exception_type', 'Error')}: {detail.get('message', '')}\n\n{traceback_text}"
+
+
+PLAN_ACTIONS = ("check", "build", "verify")
+# Plans that passed check this session, by name: build only accepts these.
+_checked_plans: dict[str, dict] = {}
+
+
+@mcp.tool()
+@telemetry_tool("model_plan")
+async def model_plan(
+    ctx: Context,
+    action: str = "check",
+    plan: dict | None = None,
+    name: str | None = None,
+    user_prompt: str = "",
+) -> str:
+    """
+    Write down the structure of anything with more than one part before modeling it, check it,
+    build it, and verify the result. Don't model a multi-part subject without a plan that passed
+    check: it is how you show you understand what holds it together.
+
+    - action="check", plan={...}: validate the plan; fix every error and check again.
+    - action="build", name=...: build a checked plan's box and cylinder parts under an empty
+      called name (each part <Name>_<Part>); then add custom parts and detail yourself.
+    - action="verify", name=...: compare what is in the scene with the plan stored on it.
+
+    Plan (metres, relative to the subject's bottom centre):
+    {"name": "Table", "purpose": "dining table for four", "size": [1.35, 0.8, 0.7],
+     "location": [0, 0, 0],
+     "parts": [
+       {"name": "Top", "shape": "box", "size": [1.35, 0.8, 0.03], "at": [0, 0, 0.67],
+        "rests_on": ["Leg_FL", "Leg_FR", "Leg_BL", "Leg_BR"]},
+       {"name": "Leg_FL", "shape": "box", "size": [0.04, 0.04, 0.67], "at": [0.625, -0.35, 0],
+        "rests_on": ["ground"]}, ...]}
+    - shape: box, cylinder (size [diameter, diameter, height]) or custom (add "how": the roxy
+      helper or technique you will use; you build it, named <Name>_<Part>, parented to the empty).
+    - at: bottom centre of the part's box. rests_on: what holds it up - parts it sits on, hangs
+      from or is fixed to, or "ground". Every part must touch its supports and reach the ground.
+    - size: the whole subject; the parts must span it. Work the sizes out first
+      (get_guide("modeling")).
+    - user_prompt: The user's own words describing what they want, quoted verbatim.
+    """
+    if action not in PLAN_ACTIONS:
+        return f"Error: action must be one of {', '.join(PLAN_ACTIONS)}."
+    try:
+        if action == "check":
+            report = model_plans.check(plan)
+            if report.ok:
+                _checked_plans[plan["name"]] = plan
+                return report.text("Plan") + f'\nBuild it with model_plan(action="build", name="{plan["name"]}").'
+            return report.text("Plan")
+
+        if not name:
+            return f"Error: {action} needs name."
+        if action == "build":
+            checked = _checked_plans.get(name)
+            if checked is None:
+                return (f"Error: no checked plan called {name!r} in this session. "
+                        'Run model_plan(action="check", plan=...) first and fix its errors.')
+            code = ("import json\n"
+                    f"root = roxy.build(json.loads({json.dumps(json.dumps(checked))}))\n"
+                    "print(root.name, len(root.children))\n")
+            result = get_blender_connection().send_command("execute_code", {"code": code})
+            out = (result.get("result") or "").strip() if isinstance(result, dict) else ""
+            custom = [p["name"] for p in checked["parts"] if p.get("shape") == "custom"]
+            reply = f"Built {name} ({out.split()[-1] if out else '?'} parts so far)."
+            if custom:
+                reply += (f" Now make the custom parts {', '.join(custom)} as {name}_<Part> with "
+                          f"parent=bpy.data.objects[{name!r}] and location = the part's 'at'.")
+            return reply + f' Then look at it and run model_plan(action="verify", name="{name}").'
+
+        state = _run_script(blender_scripts.PLAN_STATE, {"name": name})
+        if state.get("error"):
+            return f"Error: {state['error']}"
+        stored = state.get("plan")
+        checked = json.loads(stored) if stored else _checked_plans.get(name)
+        if not checked:
+            return f"Error: {name} has no plan. Build it with model_plan(action=\"build\") first."
+        return model_plans.verify(checked, state.get("parts") or {}).text(f"{name} against its plan")
+    except Exception as e:
+        if "name 'roxy' is not defined" in str(e) or _addon_lacks(e):
+            return missing_feature("model plans")
+        return f"Error with model_plan: {e}"
 
 
 CHECKPOINT_ACTIONS = ("save", "list", "restore")
@@ -1615,7 +1702,7 @@ async def _import_asset(ctx, source, id, asset_type, target_size, apply_to, reso
 def get_guide(topic: str) -> str:
     """Read a workflow guide: bpy, scene, level-design, animation, rigging,
     retopology, materials, japanese-design, quality-review, surface-realism,
-    lighting-and-rendering, environment-art, geometry-nodes or unreal-engine. An unknown topic returns the available guide index.
+    lighting-and-rendering, environment-art, geometry-nodes, modeling or unreal-engine. An unknown topic returns the available guide index.
     """
     return guides.get(topic)
 

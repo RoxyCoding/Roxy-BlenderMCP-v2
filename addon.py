@@ -25,6 +25,7 @@ import os.path as osp
 from collections import deque
 from urllib.parse import quote, urlencode, urlparse, urlunparse, parse_qsl
 from contextlib import contextmanager, redirect_stdout, suppress
+from types import SimpleNamespace
 from bpy.app.handlers import persistent
 
 bl_info = {
@@ -38,7 +39,7 @@ bl_info = {
 }
 
 # Keep in sync with blender_mcp.addon_manager.EXPECTED_ADDON_PROTOCOL_VERSION.
-ADDON_PROTOCOL_VERSION = 17
+ADDON_PROTOCOL_VERSION = 19
 
 # Per-snapshot object cap for get_world_state_snapshot. Keep in sync with
 # blender_mcp.trajectory.MAX_SNAPSHOT_OBJECTS.
@@ -1454,6 +1455,7 @@ class BlenderMCPServer:
                 "list_checkpoints",
                 "restore_checkpoint",
                 "download_ambientcg_material",
+                "roxy_helpers",
             ]),
             "blender_version": bpy.app.version_string,
         }
@@ -2088,6 +2090,11 @@ class BlenderMCPServer:
         try:
             # Create a local namespace for execution
             namespace = {"bpy": bpy}
+            try:
+                namespace["roxy"] = roxy_helpers()
+            except Exception as e:
+                # A broken helper must never take plain scripts down with it.
+                print(f"BlenderMCP: roxy helpers unavailable: {e}")
 
             # Capture stdout during execution, and return it as result
             capture_buffer = io.StringIO()
@@ -3793,6 +3800,467 @@ class BlenderMCPServer:
                             3. Restart the connection to Claude"""
         }
 
+
+
+#region Roxy helpers
+# The helpers the guides document (modeling, surface-realism, environment-art,
+# geometry-nodes), handed to execute_code as `roxy`, so a script calls
+# roxy.box(...) instead of pasting them in. They run in a namespace of their
+# own, and `roxy` carries only their functions - no modules - so safe mode's
+# checks on bpy paths can't be sidestepped through it.
+
+_ROXY_HELPERS_SOURCE = r'''
+# --- modeling ---
+
+import bmesh
+import math
+from mathutils import Matrix, Vector
+
+
+def _object(name, bm, location, parent=None, collection=None):
+    me = bpy.data.meshes.new(name)
+    bm.to_mesh(me); bm.free()
+    for p in me.polygons:
+        p.use_smooth = True
+    obj = bpy.data.objects.new(name, me)
+    (collection or bpy.context.scene.collection).objects.link(obj)
+    obj.location = location
+    if parent:
+        obj.parent = parent
+    return obj
+
+
+def finish(obj, bevel=0.002, segments=2):
+    """Rounded edges that catch highlights, with clean shading. bevel in metres; 0 to skip."""
+    if bevel > 0:
+        b = obj.modifiers.new("Bevel", "BEVEL")
+        b.width = bevel; b.segments = segments
+        b.limit_method = "ANGLE"; b.angle_limit = math.radians(30)
+        b.harden_normals = True
+    obj.modifiers.new("WeightedNormal", "WEIGHTED_NORMAL").keep_sharp = True
+    return obj
+
+
+def box(name, size, location=(0, 0, 0), bevel=0.002, parent=None, collection=None, origin="bottom"):
+    """A box of real size (x, y, z metres) with scale 1. origin "bottom" puts the origin at the
+    bottom centre, so location is where it stands; "center" at its middle."""
+    bm = bmesh.new()
+    bmesh.ops.create_cube(bm, size=1.0)
+    lift = 0.5 if origin == "bottom" else 0.0
+    for v in bm.verts:
+        v.co = Vector((v.co.x * size[0], v.co.y * size[1], (v.co.z + lift) * size[2]))
+    return finish(_object(name, bm, location, parent, collection), bevel)
+
+
+def cylinder(name, radius, depth, location=(0, 0, 0), segments=32, bevel=0.001, parent=None,
+             collection=None, origin="bottom"):
+    """An upright cylinder (legs, poles, pipes, knobs). Rotate the object to lay it down."""
+    bm = bmesh.new()
+    bmesh.ops.create_cone(bm, cap_ends=True, segments=segments, radius1=radius, radius2=radius, depth=depth)
+    if origin == "bottom":
+        for v in bm.verts:
+            v.co.z += depth / 2
+    return finish(_object(name, bm, location, parent, collection), bevel)
+
+
+def extrude_profile(name, points, depth, location=(0, 0, 0), bevel=0.001, parent=None, collection=None):
+    """Extrude a closed 2D outline [(x, z), ...] in metres along +Y by depth: mouldings, brackets,
+    frames, signs, anything with a custom silhouette. Points go round the outline in order."""
+    bm = bmesh.new()
+    verts = [bm.verts.new((x, 0.0, z)) for x, z in points]
+    face = bm.faces.new(verts)
+    ext = bmesh.ops.extrude_face_region(bm, geom=[face])
+    moved = [e for e in ext["geom"] if isinstance(e, bmesh.types.BMVert)]
+    bmesh.ops.translate(bm, verts=moved, vec=(0.0, depth, 0.0))
+    bmesh.ops.recalc_face_normals(bm, faces=bm.faces)
+    return finish(_object(name, bm, location, parent, collection), bevel)
+
+
+def cut(obj, cutter):
+    """Subtract cutter from obj (holes, slots, recesses) and delete the cutter. The cut goes into
+    the mesh; the Bevel and Weighted Normal from finish() stay live and round the new edges too."""
+    m = obj.modifiers.new("Cut", "BOOLEAN")
+    m.operation = "DIFFERENCE"; m.solver = "EXACT"; m.object = cutter
+    obj.modifiers.move(len(obj.modifiers) - 1, 0)    # applied first, under the bevel
+    bpy.context.view_layer.update()
+    bpy.context.view_layer.objects.active = obj
+    with bpy.context.temp_override(object=obj, active_object=obj):
+        bpy.ops.object.modifier_apply(modifier=m.name)
+    bpy.data.objects.remove(cutter)
+    return obj
+
+
+def uv_world_box(obj, space="world"):
+    """UVs in metres, projected per face along its main axis: a texture with Mapping Scale
+    1/size tiles at real size on every object built this way, whatever its dimensions.
+    space="world" continues the pattern across neighbouring pieces (walls, floors) - call it
+    after placing them; "local" keeps it fixed to the object when it moves (props)."""
+    bpy.context.view_layer.update()
+    bm = bmesh.new(); bm.from_mesh(obj.data)
+    uv = bm.loops.layers.uv.verify()
+    mw = obj.matrix_world if space == "world" else Matrix.Identity(4)
+    for f in bm.faces:
+        n = f.normal
+        axis = max(range(3), key=lambda i: abs(n[i]))
+        a, b = [(1, 2), (0, 2), (0, 1)][axis]
+        for loop in f.loops:
+            co = mw @ loop.vert.co
+            loop[uv].uv = (co[a], co[b])
+    bm.to_mesh(obj.data); bm.free()
+    return obj
+
+
+def assemble(name, parts, location=(0, 0, 0), collection=None):
+    """Group parts under an empty, so the whole object moves, rotates and exports as one."""
+    root = bpy.data.objects.new(name, None)
+    root.empty_display_type = "PLAIN_AXES"
+    (collection or bpy.context.scene.collection).objects.link(root)
+    root.location = location
+    for p in parts:
+        p.parent = root
+        p.location = Vector(p.location) - Vector(location)
+    return root
+
+
+def panel_with_openings(name, size, openings, location=(0, 0, 0), bevel=0.002, parent=None, collection=None):
+    """A board or wall (width x, thickness y, height z) with rectangular openings, each
+    (x_centre, z_bottom, width, height) in metres from the panel's bottom centre: walls with
+    doors and windows, doors with glazing, appliance fronts, furniture sides, signs."""
+    panel = box(name, size, location, bevel=bevel, parent=parent, collection=collection)
+    for i, (x, z, w, h) in enumerate(openings):
+        cutter = box(f"_cut_{name}_{i}", (w, size[1] * 3, h),
+                     (location[0] + x, location[1], location[2] + z), bevel=0, collection=collection)
+        if parent:
+            cutter.parent = parent
+        cut(panel, cutter)
+    return panel
+
+
+def steps(name, rise, run, width, max_step_rise=0.2, location=(0, 0, 0), bevel=0.002,
+          parent=None, collection=None):
+    """A flight of steps climbing `rise` over `run` along +Y from `location`, centred across X:
+    stairs, bleachers, stepped plinths.
+    The step count is the fewest whose risers stay under max_step_rise (Japanese houses allow up to
+    0.23 m with treads of at least 0.15 m; 0.16-0.18 m feels comfortable in public buildings).
+    Returns (object, step count, riser, tread)."""
+    n = max(1, math.ceil(rise / max_step_rise - 1e-9))
+    riser, tread = rise / n, run / n
+    outline = [(0.0, 0.0)]
+    for i in range(n):
+        outline += [(i * tread, (i + 1) * riser), ((i + 1) * tread, (i + 1) * riser)]
+    outline.append((run, 0.0))
+    # extrude_profile draws in X/Z and extrudes along +Y: draw along X, then turn to climb +Y.
+    obj = extrude_profile(name, outline, width, location, bevel=bevel, parent=parent, collection=collection)
+    obj.rotation_euler.z = math.pi / 2
+    obj.location.x += width / 2
+    return obj, n, riser, tread
+
+
+def sweep(name, points, radius=0.02, location=(0, 0, 0), resolution=4, parent=None, collection=None):
+    """A round member following a path of 3D points in metres: handrails, pipes, frames, cables,
+    bent tubes. Corners are rounded by the curve's smoothing."""
+    cd = bpy.data.curves.new(name + "_path", "CURVE"); cd.dimensions = "3D"
+    spline = cd.splines.new("POLY"); spline.points.add(len(points) - 1)
+    for p, co in zip(spline.points, points):
+        p.co = (*co, 1.0)
+    cd.bevel_depth = radius; cd.bevel_resolution = resolution; cd.use_fill_caps = True
+    tmp = bpy.data.objects.new(name + "_path", cd)
+    bpy.context.scene.collection.objects.link(tmp)
+    bpy.context.view_layer.update()
+    me = bpy.data.meshes.new_from_object(tmp.evaluated_get(bpy.context.evaluated_depsgraph_get()))
+    bpy.data.objects.remove(tmp); bpy.data.curves.remove(cd)
+    me.name = name
+    obj = bpy.data.objects.new(name, me)
+    (collection or bpy.context.scene.collection).objects.link(obj)
+    obj.location = location
+    if parent:
+        obj.parent = parent
+    for p in me.polygons:
+        p.use_smooth = True
+    return obj
+
+
+def lathe(name, profile, segments=48, location=(0, 0, 0), parent=None, collection=None):
+    """Spin a side profile [(radius, z), ...] in metres around the Z axis: bottles, cups, bowls,
+    vases, lamps, columns, knobs, wheels (rotate afterwards). Start and end the profile on the
+    axis (radius 0) for a closed solid."""
+    bm = bmesh.new()
+    verts = [bm.verts.new((r, 0.0, z)) for r, z in profile]
+    edges = [bm.edges.new((a, b)) for a, b in zip(verts, verts[1:])]
+    bmesh.ops.spin(bm, geom=verts + edges, cent=(0, 0, 0), axis=(0, 0, 1),
+                   angle=2 * math.pi, steps=segments, use_merge=True)
+    bmesh.ops.remove_doubles(bm, verts=bm.verts, dist=1e-5)
+    bmesh.ops.recalc_face_normals(bm, faces=bm.faces)
+    return finish(_object(name, bm, location, parent, collection), bevel=0)
+
+
+# --- surface-realism ---
+
+def _breakup(nt, mask, scale, amount):
+    """mask * noise remapped to (1 - amount)..1, so the mask breaks into patches."""
+    noise = nt.nodes.new("ShaderNodeTexNoise")
+    noise.inputs["Scale"].default_value = scale; noise.inputs["Detail"].default_value = 8
+    remap = nt.nodes.new("ShaderNodeMapRange")
+    remap.inputs["From Min"].default_value = 0.4; remap.inputs["From Max"].default_value = 0.6
+    remap.inputs["To Min"].default_value = 1 - amount
+    nt.links.new(noise.outputs["Fac"], remap.inputs["Value"])
+    mul = nt.nodes.new("ShaderNodeMath"); mul.operation = "MULTIPLY"; mul.use_clamp = True
+    nt.links.new(mask, mul.inputs[0]); nt.links.new(remap.outputs["Result"], mul.inputs[1])
+    return mul.outputs["Value"]
+
+def _ramp(nt, value, low, high):
+    ramp = nt.nodes.new("ShaderNodeValToRGB")
+    ramp.color_ramp.elements[0].position = low; ramp.color_ramp.elements[1].position = high
+    nt.links.new(value, ramp.inputs["Fac"])
+    return ramp.outputs["Color"]
+
+def _invert(nt, value):
+    inv = nt.nodes.new("ShaderNodeMath"); inv.operation = "SUBTRACT"; inv.inputs[0].default_value = 1.0
+    nt.links.new(value, inv.inputs[1])
+    return inv.outputs["Value"]
+
+def edge_wear_mask(mat, width=0.01, breakup=0.7, scale=40):
+    """Convex edges and corners: rays cast inside the mesh hit nearby walls there."""
+    nt = mat.node_tree
+    ao = nt.nodes.new("ShaderNodeAmbientOcclusion"); ao.inside = True; ao.only_local = True
+    ao.inputs["Distance"].default_value = width
+    return _breakup(nt, _ramp(nt, _invert(nt, ao.outputs["AO"]), 0.3, 0.6), scale, breakup)
+
+def crevice_dirt_mask(mat, distance=0.1, breakup=0.5, scale=15):
+    """Corners, seams and contact areas, where dirt collects."""
+    nt = mat.node_tree
+    ao = nt.nodes.new("ShaderNodeAmbientOcclusion"); ao.inputs["Distance"].default_value = distance
+    return _breakup(nt, _ramp(nt, _invert(nt, ao.outputs["AO"]), 0.2, 0.7), scale, breakup)
+
+def top_dust_mask(mat, breakup=0.4, scale=8):
+    """Upward-facing surfaces, where dust settles."""
+    nt = mat.node_tree
+    geo = nt.nodes.new("ShaderNodeNewGeometry")
+    xyz = nt.nodes.new("ShaderNodeSeparateXYZ")
+    nt.links.new(geo.outputs["Normal"], xyz.inputs["Vector"])
+    return _breakup(nt, _ramp(nt, xyz.outputs["Z"], 0.6, 0.95), scale, breakup)
+
+def _surface(nt):
+    out = next(n for n in nt.nodes if n.type == "OUTPUT_MATERIAL" and n.is_active_output)
+    return out, out.inputs["Surface"].links[0].from_socket
+
+def add_layer(dst, src, fac, scale=1.0):
+    """Blend material src (e.g. a Poly Haven rust) over dst where fac is 1. Stacks when repeated."""
+    nt = dst.node_tree
+    out, below = _surface(nt)
+    src_bsdf = next(n for n in src.node_tree.nodes if n.type == "BSDF_PRINCIPLED")
+    bsdf = nt.nodes.new("ShaderNodeBsdfPrincipled")
+    tc = nt.nodes.new("ShaderNodeTexCoord"); mp = nt.nodes.new("ShaderNodeMapping")
+    mp.inputs["Scale"].default_value = (scale, scale, scale)
+    nt.links.new(tc.outputs["UV"], mp.inputs["Vector"])
+
+    def image(img):
+        t = nt.nodes.new("ShaderNodeTexImage"); t.image = img
+        nt.links.new(mp.outputs["Vector"], t.inputs["Vector"])
+        return t.outputs["Color"]
+
+    for i, inp in enumerate(src_bsdf.inputs):
+        if not inp.is_linked:
+            try:
+                bsdf.inputs[i].default_value = inp.default_value
+            except (AttributeError, TypeError, ValueError):
+                pass
+            continue
+        node = inp.links[0].from_node
+        if node.type == "TEX_IMAGE":
+            nt.links.new(image(node.image), bsdf.inputs[i])
+        elif node.type == "NORMAL_MAP" and node.inputs["Color"].is_linked:
+            nm = nt.nodes.new("ShaderNodeNormalMap")
+            nt.links.new(image(node.inputs["Color"].links[0].from_node.image), nm.inputs["Color"])
+            nt.links.new(nm.outputs["Normal"], bsdf.inputs[i])
+    mix = nt.nodes.new("ShaderNodeMixShader")
+    nt.links.new(fac, mix.inputs[0]); nt.links.new(below, mix.inputs[1]); nt.links.new(bsdf.outputs[0], mix.inputs[2])
+    nt.links.new(mix.outputs[0], out.inputs["Surface"])
+    return mix
+
+def grime(mat, fac, color=(0.05, 0.04, 0.03, 1.0), roughness=0.9):
+    """Darken and roughen the base material where fac is 1, without a second texture."""
+    nt = mat.node_tree
+    bsdf = next(n for n in nt.nodes if n.type == "BSDF_PRINCIPLED")
+    for name, value, kind in (("Base Color", color, "RGBA"), ("Roughness", roughness, "FLOAT")):
+        target = bsdf.inputs[name]
+        mix = nt.nodes.new("ShaderNodeMix"); mix.data_type = kind
+        ins = [s for s in mix.inputs if s.enabled]          # Factor, A, B for this data type
+        nt.links.new(fac, ins[0])
+        if target.is_linked:
+            nt.links.new(target.links[0].from_socket, ins[1])
+        else:
+            ins[1].default_value = target.default_value
+        ins[2].default_value = value
+        nt.links.new(next(s for s in mix.outputs if s.enabled), target)
+
+
+# --- environment-art ---
+
+def scatter(target, collection, density=5.0, scale=(0.6, 1.4), seed=0, name="Scatter"):
+    """Scatter random copies of the objects in `collection` over `target`'s faces.
+
+    density is copies per square metre. The originals in the collection are the
+    sources: keep them out of view (exclude or hide that collection).
+    """
+    ng = bpy.data.node_groups.new(name, "GeometryNodeTree")
+    ng.interface.new_socket("Geometry", in_out="INPUT", socket_type="NodeSocketGeometry")
+    ng.interface.new_socket("Geometry", in_out="OUTPUT", socket_type="NodeSocketGeometry")
+    n, l = ng.nodes, ng.links
+    gi = n.new("NodeGroupInput"); go = n.new("NodeGroupOutput")
+    dist = n.new("GeometryNodeDistributePointsOnFaces")
+    dist.inputs["Density"].default_value = density
+    dist.inputs["Seed"].default_value = seed
+    info = n.new("GeometryNodeCollectionInfo")
+    info.inputs["Collection"].default_value = collection
+    info.inputs["Separate Children"].default_value = True
+    info.inputs["Reset Children"].default_value = True
+    inst = n.new("GeometryNodeInstanceOnPoints")
+    inst.inputs["Pick Instance"].default_value = True
+    rot = n.new("FunctionNodeRandomValue"); rot.data_type = "FLOAT_VECTOR"
+    rot.inputs["Max"].default_value = (0.0, 0.0, 6.2832)      # any heading, stays upright
+    size = n.new("FunctionNodeRandomValue"); size.data_type = "FLOAT"
+    size.inputs["Min"].default_value, size.inputs["Max"].default_value = scale
+    join = n.new("GeometryNodeJoinGeometry")
+    l.new(gi.outputs["Geometry"], dist.inputs["Mesh"])
+    l.new(dist.outputs["Points"], inst.inputs["Points"])
+    l.new(info.outputs["Instances"], inst.inputs["Instance"])
+    l.new(rot.outputs["Value"], inst.inputs["Rotation"])
+    l.new(size.outputs["Value"], inst.inputs["Scale"])
+    l.new(gi.outputs["Geometry"], join.inputs["Geometry"])
+    l.new(inst.outputs["Instances"], join.inputs["Geometry"])
+    l.new(join.outputs["Geometry"], go.inputs["Geometry"])
+    mod = target.modifiers.new(name, "NODES"); mod.node_group = ng
+    return mod
+
+
+# --- geometry-nodes ---
+
+def gn_modifier(obj, name):
+    """A Geometry Nodes modifier on obj with an empty group: Geometry in, Geometry out."""
+    ng = bpy.data.node_groups.new(name, "GeometryNodeTree")
+    ng.interface.new_socket("Geometry", in_out="INPUT", socket_type="NodeSocketGeometry")
+    ng.interface.new_socket("Geometry", in_out="OUTPUT", socket_type="NodeSocketGeometry")
+    gi = ng.nodes.new("NodeGroupInput"); go = ng.nodes.new("NodeGroupOutput")
+    mod = obj.modifiers.new(name, "NODES"); mod.node_group = ng
+    return mod, ng, gi, go
+
+def sock(node, name, output=False):
+    """The enabled socket called name; several sockets can share a name, one per data type."""
+    return next(s for s in (node.outputs if output else node.inputs) if s.name == name and s.enabled)
+
+def expose(mod, name, socket_type, default):
+    """Add a group input the user can change on the modifier, and return the group input socket."""
+    ng = mod.node_group
+    item = ng.interface.new_socket(name, in_out="INPUT", socket_type=socket_type)
+    item.default_value = default
+    mod[item.identifier] = default          # modifier inputs are keyed by identifier ("Socket_2"), not name
+    gi = next(n for n in ng.nodes if n.type == "GROUP_INPUT")
+    return gi.outputs[name]
+
+def instances_along_curve(curve_obj, source_obj, spacing=10.0, name="AlongCurve"):
+    """Copies of source_obj every `spacing` metres along a curve object (poles, posts, lamps)."""
+    mod, ng, gi, go = gn_modifier(curve_obj, name)
+    n, l = ng.nodes, ng.links
+    pts = n.new("GeometryNodeCurveToPoints"); pts.mode = "LENGTH"
+    sock(pts, "Length").default_value = spacing
+    info = n.new("GeometryNodeObjectInfo"); info.inputs["Object"].default_value = source_obj
+    info.inputs["As Instance"].default_value = True
+    inst = n.new("GeometryNodeInstanceOnPoints")
+    l.new(gi.outputs["Geometry"], pts.inputs["Curve"])
+    l.new(pts.outputs["Points"], inst.inputs["Points"])
+    l.new(info.outputs["Geometry"], inst.inputs["Instance"])
+    l.new(pts.outputs["Rotation"], inst.inputs["Rotation"])   # follows the curve's direction
+    l.new(inst.outputs["Instances"], go.inputs["Geometry"])
+    return mod
+
+def tube_from_curve(curve_obj, radius=0.01, material=None, name="Tube"):
+    """Turn a curve object into a round tube: cables, wires, pipes, hoses, rails."""
+    mod, ng, gi, go = gn_modifier(curve_obj, name)
+    n, l = ng.nodes, ng.links
+    circle = n.new("GeometryNodeCurvePrimitiveCircle")
+    circle.inputs["Resolution"].default_value = 8
+    circle.inputs["Radius"].default_value = radius
+    to_mesh = n.new("GeometryNodeCurveToMesh"); to_mesh.inputs["Fill Caps"].default_value = True
+    l.new(gi.outputs["Geometry"], to_mesh.inputs["Curve"])
+    l.new(circle.outputs["Curve"], to_mesh.inputs["Profile Curve"])
+    last = to_mesh.outputs["Mesh"]
+    if material:
+        setm = n.new("GeometryNodeSetMaterial"); setm.inputs["Material"].default_value = material
+        l.new(last, setm.inputs["Geometry"]); last = setm.outputs["Geometry"]
+    l.new(last, go.inputs["Geometry"])
+    return mod
+
+def density_from_vertex_group(dist_node, ng, group_name, density):
+    """Make a Distribute Points on Faces node's density follow a painted vertex group (0-1)."""
+    attr = ng.nodes.new("GeometryNodeInputNamedAttribute"); attr.data_type = "FLOAT"
+    attr.inputs["Name"].default_value = group_name
+    mul = ng.nodes.new("ShaderNodeMath"); mul.operation = "MULTIPLY"; mul.inputs[1].default_value = density
+    ng.links.new(sock(attr, "Attribute", output=True), mul.inputs[0])
+    ng.links.new(mul.outputs["Value"], dist_node.inputs["Density"])
+
+def realize(mod):
+    """Insert Realize Instances before the output, so exporters and later modifiers see real mesh."""
+    ng = mod.node_group
+    go = next(n for n in ng.nodes if n.type == "GROUP_OUTPUT")
+    link = go.inputs["Geometry"].links[0]
+    real = ng.nodes.new("GeometryNodeRealizeInstances")
+    ng.links.new(link.from_socket, real.inputs["Geometry"])
+    ng.links.new(real.outputs["Geometry"], go.inputs["Geometry"])
+
+# --- model plans ---
+
+def build(plan):
+    """Build a checked plan (model_plan) under one empty named after it: box and cylinder parts
+    are made here, named <Name>_<Part>; custom parts are left for you. Rebuilding replaces them.
+    The plan is stored on the empty so model_plan(action="verify") can compare against it."""
+    import json
+    name = plan["name"]
+    root = bpy.data.objects.get(name)
+    if root is None:
+        root = bpy.data.objects.new(name, None)
+        root.empty_display_type = "PLAIN_AXES"
+        bpy.context.scene.collection.objects.link(root)
+        root.location = plan.get("location", (0, 0, 0))
+    made = []
+    for part in plan["parts"]:
+        shape = part.get("shape", "box")
+        if shape not in ("box", "cylinder"):
+            continue
+        part_name = f"{name}_{part['name']}"
+        old = bpy.data.objects.get(part_name)
+        if old is not None:
+            bpy.data.objects.remove(old)
+        sx, sy, sz = part["size"]
+        at = tuple(part["at"])
+        bevel = part.get("bevel", 0.002 if shape == "box" else 0.001)
+        if shape == "box":
+            obj = box(part_name, (sx, sy, sz), at, bevel=bevel, parent=root)
+        else:
+            obj = cylinder(part_name, sx / 2, sz, at, bevel=bevel, parent=root)
+        uv_world_box(obj, space="local")
+        made.append(obj.name)
+    root["roxy_plan"] = json.dumps(plan)
+    return root
+
+'''
+
+_roxy_helpers = None
+
+
+def roxy_helpers():
+    """The `roxy` namespace for execute_code, built once."""
+    global _roxy_helpers
+    if _roxy_helpers is None:
+        ns = {"bpy": bpy, "__name__": "roxy"}
+        exec(compile(_ROXY_HELPERS_SOURCE, "<roxy helpers>", "exec"), ns)
+        _roxy_helpers = SimpleNamespace(**{
+            k: v for k, v in ns.items()
+            if callable(v) and not k.startswith("_") and getattr(v, "__module__", None) == "roxy"
+        })
+    return _roxy_helpers
+
+#endregion
 
 
 #region Checkpoints

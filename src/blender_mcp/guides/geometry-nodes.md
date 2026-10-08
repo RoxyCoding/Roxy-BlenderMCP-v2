@@ -36,7 +36,7 @@ print([p.identifier for p in n.bl_rna.properties if not p.is_readonly])
 ```
 
 - Several sockets can share a name, one per data type (Random Value, Switch, Mix); only the one
-  matching the node's `data_type` is enabled. Pick by name and `enabled` (the `sock` helper below).
+  matching the node's `data_type` is enabled. Pick by name and `enabled` (the `roxy.sock` helper below).
 - Some settings are node properties, others became input sockets ("menu sockets") in 4.x/5.x and
   differ per node: in 5.1 Curve to Points has a `mode` property, but Resample Curve has a `Mode`
   input. Printing both lists, as above, tells you which.
@@ -52,105 +52,41 @@ Position gives each element's location. If an input shows a diamond in the UI it
 
 ## Helpers
 
-Tested on Blender 5.1. Paste them into a script, then call them:
+Tested on Blender 5.1.
 
-```python
-def gn_modifier(obj, name):
-    """A Geometry Nodes modifier on obj with an empty group: Geometry in, Geometry out."""
-    ng = bpy.data.node_groups.new(name, "GeometryNodeTree")
-    ng.interface.new_socket("Geometry", in_out="INPUT", socket_type="NodeSocketGeometry")
-    ng.interface.new_socket("Geometry", in_out="OUTPUT", socket_type="NodeSocketGeometry")
-    gi = ng.nodes.new("NodeGroupInput"); go = ng.nodes.new("NodeGroupOutput")
-    mod = obj.modifiers.new(name, "NODES"); mod.node_group = ng
-    return mod, ng, gi, go
+The addon provides these as `roxy.<name>` inside execute_blender_code (addon protocol 18+), so call them directly - don't paste or redefine them. If `roxy` is undefined, the Blender addon is outdated: get_addon_status says how to update it.
 
-def sock(node, name, output=False):
-    """The enabled socket called name; several sockets can share a name, one per data type."""
-    return next(s for s in (node.outputs if output else node.inputs) if s.name == name and s.enabled)
-
-def expose(mod, name, socket_type, default):
-    """Add a group input the user can change on the modifier, and return the group input socket."""
-    ng = mod.node_group
-    item = ng.interface.new_socket(name, in_out="INPUT", socket_type=socket_type)
-    item.default_value = default
-    mod[item.identifier] = default          # modifier inputs are keyed by identifier ("Socket_2"), not name
-    gi = next(n for n in ng.nodes if n.type == "GROUP_INPUT")
-    return gi.outputs[name]
-
-def instances_along_curve(curve_obj, source_obj, spacing=10.0, name="AlongCurve"):
-    """Copies of source_obj every `spacing` metres along a curve object (poles, posts, lamps)."""
-    mod, ng, gi, go = gn_modifier(curve_obj, name)
-    n, l = ng.nodes, ng.links
-    pts = n.new("GeometryNodeCurveToPoints"); pts.mode = "LENGTH"
-    sock(pts, "Length").default_value = spacing
-    info = n.new("GeometryNodeObjectInfo"); info.inputs["Object"].default_value = source_obj
-    info.inputs["As Instance"].default_value = True
-    inst = n.new("GeometryNodeInstanceOnPoints")
-    l.new(gi.outputs["Geometry"], pts.inputs["Curve"])
-    l.new(pts.outputs["Points"], inst.inputs["Points"])
-    l.new(info.outputs["Geometry"], inst.inputs["Instance"])
-    l.new(pts.outputs["Rotation"], inst.inputs["Rotation"])   # follows the curve's direction
-    l.new(inst.outputs["Instances"], go.inputs["Geometry"])
-    return mod
-
-def tube_from_curve(curve_obj, radius=0.01, material=None, name="Tube"):
-    """Turn a curve object into a round tube: cables, wires, pipes, hoses, rails."""
-    mod, ng, gi, go = gn_modifier(curve_obj, name)
-    n, l = ng.nodes, ng.links
-    circle = n.new("GeometryNodeCurvePrimitiveCircle")
-    circle.inputs["Resolution"].default_value = 8
-    circle.inputs["Radius"].default_value = radius
-    to_mesh = n.new("GeometryNodeCurveToMesh"); to_mesh.inputs["Fill Caps"].default_value = True
-    l.new(gi.outputs["Geometry"], to_mesh.inputs["Curve"])
-    l.new(circle.outputs["Curve"], to_mesh.inputs["Profile Curve"])
-    last = to_mesh.outputs["Mesh"]
-    if material:
-        setm = n.new("GeometryNodeSetMaterial"); setm.inputs["Material"].default_value = material
-        l.new(last, setm.inputs["Geometry"]); last = setm.outputs["Geometry"]
-    l.new(last, go.inputs["Geometry"])
-    return mod
-
-def density_from_vertex_group(dist_node, ng, group_name, density):
-    """Make a Distribute Points on Faces node's density follow a painted vertex group (0-1)."""
-    attr = ng.nodes.new("GeometryNodeInputNamedAttribute"); attr.data_type = "FLOAT"
-    attr.inputs["Name"].default_value = group_name
-    mul = ng.nodes.new("ShaderNodeMath"); mul.operation = "MULTIPLY"; mul.inputs[1].default_value = density
-    ng.links.new(sock(attr, "Attribute", output=True), mul.inputs[0])
-    ng.links.new(mul.outputs["Value"], dist_node.inputs["Density"])
-
-def realize(mod):
-    """Insert Realize Instances before the output, so exporters and later modifiers see real mesh."""
-    ng = mod.node_group
-    go = next(n for n in ng.nodes if n.type == "GROUP_OUTPUT")
-    link = go.inputs["Geometry"].links[0]
-    real = ng.nodes.new("GeometryNodeRealizeInstances")
-    ng.links.new(link.from_socket, real.inputs["Geometry"])
-    ng.links.new(real.outputs["Geometry"], go.inputs["Geometry"])
-```
+- `roxy.gn_modifier(obj, name)` - A Geometry Nodes modifier on obj with an empty group: Geometry in, Geometry out.
+- `roxy.sock(node, name, output=False)` - The enabled socket called name; several sockets can share a name, one per data type.
+- `roxy.expose(mod, name, socket_type, default)` - Add a group input the user can change on the modifier, and return the group input socket.
+- `roxy.instances_along_curve(curve_obj, source_obj, spacing=10.0, name='AlongCurve')` - Copies of source_obj every `spacing` metres along a curve object (poles, posts, lamps).
+- `roxy.tube_from_curve(curve_obj, radius=0.01, material=None, name='Tube')` - Turn a curve object into a round tube: cables, wires, pipes, hoses, rails.
+- `roxy.density_from_vertex_group(dist_node, ng, group_name, density)` - Make a Distribute Points on Faces node's density follow a painted vertex group (0-1).
+- `roxy.realize(mod)` - Insert Realize Instances before the output, so exporters and later modifiers see real mesh.
 
 Examples:
 
 ```python
 # Utility poles every 25 m along a road curve, with an editable spacing.
-mod = instances_along_curve(road_curve, pole, spacing=25)
-spacing = expose(mod, "Spacing", "NodeSocketFloat", 25.0)
+mod = roxy.instances_along_curve(road_curve, pole, spacing=25)
+spacing = roxy.expose(mod, "Spacing", "NodeSocketFloat", 25.0)
 pts = next(n for n in mod.node_group.nodes if n.type == "CURVE_TO_POINTS")
-mod.node_group.links.new(spacing, sock(pts, "Length"))
+mod.node_group.links.new(spacing, roxy.sock(pts, "Length"))
 
 # Overhead wires between them: a Bezier curve per span, sagging in the middle, turned into tubes.
-tube_from_curve(wire_curve, radius=0.008, material=bpy.data.materials["Cable"])
+roxy.tube_from_curve(wire_curve, radius=0.008, material=bpy.data.materials["Cable"])
 
 # Grass only where a vertex group called "grass" was painted.
-density_from_vertex_group(dist_node, ng, "grass", density=40)
+roxy.density_from_vertex_group(dist_node, ng, "grass", density=40)
 ```
 
-For general scattering (random rotation and scale, several source objects) use the `scatter`
+For general scattering (random rotation and scale, several source objects) use the `roxy.scatter`
 helper in `get_guide("environment-art")`.
 
 ## Instances and realizing
 
 Instances are cheap: thousands of copies share one mesh. Keep them as instances while you work.
-Realize them (the `realize` helper, or Realize Instances in the tree) only when something needs
+Realize them (the `roxy.realize` helper, or Realize Instances in the tree) only when something needs
 real geometry: a later modifier, a boolean, a bake, or an export that must contain them. Realizing
 very many instances makes a huge mesh; check the triangle count first
 (`get_scene_info(fields=["topology"])`).
@@ -168,7 +104,7 @@ the Attribute node's type set to Instancer.
 Unreal does not run Geometry Nodes. Decide per result:
 
 - Structures and one-off results (a fence along a path, a railing, cables, a tiled facade):
-  `realize`, then export with `use_mesh_modifiers=True` (`get_guide("unreal-engine")`), or apply
+  `roxy.realize`, then export with `use_mesh_modifiers=True` (`get_guide("unreal-engine")`), or apply
   the modifier on a copy first.
 - Scattered vegetation and debris over large areas: export the source assets (one `SM_` each) and
   scatter them in Unreal with its foliage tools or PCG instead of exporting millions of baked

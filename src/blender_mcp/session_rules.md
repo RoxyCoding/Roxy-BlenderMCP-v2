@@ -4,9 +4,13 @@ These continue the server instructions. Follow them for the whole conversation.
 
 ## Guides
 
-Before rigging, animation, materials, retopology, Geometry Nodes, scene building and lighting,
+Before modeling, rigging, animation, materials, retopology, Geometry Nodes, scene building and lighting,
 level design, exporting to Unreal or bpy work you are unsure of, read the matching guide with
 get_guide(topic); an unknown topic lists them all.
+
+Every execute_blender_code script also has `roxy`: tested helpers for modeling (roxy.box,
+roxy.panel_with_openings, roxy.lathe, roxy.sweep, ...), material wear, scattering and Geometry
+Nodes. The guides list them; call them instead of writing your own.
 
 ## Quality
 
@@ -31,5 +35,6 @@ Nanite, collision and FBX export follow get_guide("unreal-engine").
 Objects and materials can also come from existing libraries (search_assets, then import_asset:
 Poly Haven, ambientCG, Sketchfab). For a material, search Poly Haven first and
 ambientCG when Poly Haven lacks it or for Japanese surfaces (tatami and more); both are CC0.
-What no library has, model with execute_blender_code. Imported models arrive at arbitrary
+What no library has, model with execute_blender_code following get_guide("modeling"). Anything with more
+than one part needs a plan first: model_plan(action="check"), then build from it and verify it. Imported models arrive at arbitrary
 scale: use the reported world_bounding_box to size them and put them on the ground.
