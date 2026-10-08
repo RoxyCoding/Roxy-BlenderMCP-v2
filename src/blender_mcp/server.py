@@ -56,6 +56,8 @@ logging.basicConfig(level=logging.INFO,
                     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 logger = logging.getLogger("BlenderMCPServer")
 
+_READ_ONLY = ToolAnnotations(readOnlyHint=True)
+
 # Default configuration
 DEFAULT_HOST = "localhost"
 DEFAULT_PORT = 9876
@@ -457,7 +459,7 @@ def _integrations(blender: BlenderConnection, deadline: float) -> dict:
     return {"libraries": status}
 
 
-@mcp.tool()
+@mcp.tool(annotations=_READ_ONLY)
 async def get_addon_status(ctx: Context, user_prompt: str = "") -> str:
     """
     Check the connected Blender: its version, whether the addon matches this server, and which
@@ -578,7 +580,7 @@ def _format_scene_summary(data: dict, fields) -> str:
     return "\n".join(lines)
 
 
-@mcp.tool()
+@mcp.tool(annotations=_READ_ONLY)
 @telemetry_tool("get_scene_info")
 async def get_scene_info(
     ctx: Context,
@@ -1471,7 +1473,7 @@ def _look_caption(info: dict) -> str:
     return " ".join(parts)
 
 
-@mcp.tool(meta={"ui": {"resourceUri": VIEWPORT_URI}})
+@mcp.tool(annotations=_READ_ONLY, meta={"ui": {"resourceUri": VIEWPORT_URI}})
 @telemetry_tool("look")
 async def look(
     ctx: Context,
@@ -1799,7 +1801,6 @@ for _guide in guides.all_guides().values():
 # the host UI, never by the model, and are hidden from clients without MCP Apps.
 
 _APP_ONLY = {"ui": {"visibility": ["app"]}}
-_READ_ONLY = ToolAnnotations(readOnlyHint=True)
 _SCENE_ITEM_KINDS = ("object", "material", "collection")
 
 
@@ -1932,7 +1933,7 @@ def viewport_latest(since: int = 0) -> CallToolResult:
     return _viewport_result(since)
 
 
-@mcp.tool(meta=_APP_ONLY)
+@mcp.tool(annotations=_READ_ONLY, meta=_APP_ONLY)
 def viewport_capture(max_size: int = 1000, auto: bool = False) -> CallToolResult:
     """Capture a fresh viewport screenshot for the Viewport app.
 

@@ -411,31 +411,32 @@ def set_attr(obj, attr, value):
     except Exception:
         saved.pop()
 
-requested = ARGS.get("shading")
-shading_types = {"solid": "SOLID", "material": "MATERIAL", "rendered": "RENDERED", "wireframe": "SOLID", "xray": "SOLID"}
-if requested:
-    set_attr(shading, "type", shading_types[requested])
-
-info = {"mode": mode, "targets": len(targets), "center": [round(v, 2) for v in center],
-        "size": [round(v, 2) for v in (hi - lo)]}
-
-if mode != "viewport":
-    # The 3D cursor, light and camera gizmos and parent lines sit across generated views
-    # and read as part of the scene.
-    set_attr(overlay, "show_cursor", False)
-    set_attr(overlay, "show_extras", False)
-    set_attr(overlay, "show_relationship_lines", False)
-    if mode == "camera" or ARGS.get("view") == "camera" or shading.type in {"RENDERED", "MATERIAL"}:
-        # Grid, light and camera gizmos aren't part of what's being judged.
-        set_attr(overlay, "show_overlays", False)
-    engine = scene.render.engine
-    if shading.type == "RENDERED" and "EEVEE" not in engine and engine != "BLENDER_WORKBENCH":
-        # Progressive engines like Cycles draw nothing into an offscreen view.
-        return {"error": f"Rendered shading can't be captured with {engine}. Render and look at "
-                         "image=\"Render Result\", use material shading, or switch the engine."}
 frame_before = scene.frame_current
 
 try:
+    requested = ARGS.get("shading")
+    shading_types = {"solid": "SOLID", "material": "MATERIAL", "rendered": "RENDERED", "wireframe": "SOLID", "xray": "SOLID"}
+    if requested:
+        set_attr(shading, "type", shading_types[requested])
+
+    info = {"mode": mode, "targets": len(targets), "center": [round(v, 2) for v in center],
+            "size": [round(v, 2) for v in (hi - lo)]}
+
+    if mode != "viewport":
+        # The 3D cursor, light and camera gizmos and parent lines sit across generated views
+        # and read as part of the scene.
+        set_attr(overlay, "show_cursor", False)
+        set_attr(overlay, "show_extras", False)
+        set_attr(overlay, "show_relationship_lines", False)
+        if mode == "camera" or ARGS.get("view") == "camera" or shading.type in {"RENDERED", "MATERIAL"}:
+            # Grid, light and camera gizmos aren't part of what's being judged.
+            set_attr(overlay, "show_overlays", False)
+        engine = scene.render.engine
+        if shading.type == "RENDERED" and "EEVEE" not in engine and engine != "BLENDER_WORKBENCH":
+            # Progressive engines like Cycles draw nothing into an offscreen view.
+            return {"error": f"Rendered shading can't be captured with {engine}. Render and look at "
+                             "image=\"Render Result\", use material shading, or switch the engine."}
+
     if requested == "wireframe":
         # Edges over a plain matcap surface: topology and form in one picture.
         set_attr(shading, "light", "MATCAP")
@@ -502,13 +503,15 @@ try:
         info["views"] = [label(v) for v in views]
         image = sheet(tiles, cols)
 finally:
-    if scene.frame_current != frame_before:
-        scene.frame_set(frame_before)
-    for obj, attr, value in reversed(saved):
-        try:
-            setattr(obj, attr, value)
-        except Exception:
-            pass
+    try:
+        if scene.frame_current != frame_before:
+            scene.frame_set(frame_before)
+    finally:
+        for obj, attr, value in reversed(saved):
+            try:
+                setattr(obj, attr, value)
+            except Exception:
+                pass
 
 h, w = image.shape[:2]
 img = bpy.data.images.new("mcp_look", w, h, alpha=True)
