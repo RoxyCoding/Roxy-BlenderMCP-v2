@@ -70,54 +70,61 @@ def bounds(obj):
     hi = [max(p[i] for p in pts) for i in range(3)]
     return lo, hi
 
+objects = []
+
 def line(obj, depth=0):
     parts = [("  " * depth) + obj.name, obj.type.lower()]
+    values = {}
+    def add(field, value):
+        values[field] = value
+        parts.append(value)
     if "location" in F:
         loc = obj.matrix_world.translation
-        parts.append(f"at ({r(loc.x)}, {r(loc.y)}, {r(loc.z)})")
+        add("location", f"at ({r(loc.x)}, {r(loc.y)}, {r(loc.z)})")
     if "rotation" in F:
         e = obj.matrix_world.to_euler()
-        parts.append(f"rot ({round(math.degrees(e.x))}, {round(math.degrees(e.y))}, {round(math.degrees(e.z))})")
+        add("rotation", f"rot ({round(math.degrees(e.x))}, {round(math.degrees(e.y))}, {round(math.degrees(e.z))})")
     if "scale" in F:
         s = obj.matrix_world.to_scale()
-        parts.append(f"scale ({r(s.x)}, {r(s.y)}, {r(s.z)})")
+        add("scale", f"scale ({r(s.x)}, {r(s.y)}, {r(s.z)})")
     b = bounds(obj) if F & {"size", "ground"} else None
     if b and "size" in F:
-        parts.append(f"size {r(b[1][0] - b[0][0])}x{r(b[1][1] - b[0][1])}x{r(b[1][2] - b[0][2])}")
+        add("size", f"size {r(b[1][0] - b[0][0])}x{r(b[1][1] - b[0][1])}x{r(b[1][2] - b[0][2])}")
     if b and "ground" in F:
         if abs(b[0][2]) < 0.005:
-            parts.append("on ground")
+            add("ground", "on ground")
         elif b[0][2] < -0.005:
-            parts.append(f"below ground by {r(-b[0][2])}")
+            add("ground", f"below ground by {r(-b[0][2])}")
         else:
-            parts.append(f"floating {r(b[0][2])}")
+            add("ground", f"floating {r(b[0][2])}")
     if "parent" in F and obj.parent:
-        parts.append(f"parent {obj.parent.name}")
+        add("parent", f"parent {obj.parent.name}")
     if "details" in F:
         if obj.type == "MESH":
-            parts.append(f"{len(obj.data.polygons)} faces")
+            add("details", f"{len(obj.data.polygons)} faces")
         elif obj.type == "ARMATURE":
-            parts.append(f"{len(obj.data.bones)} bones")
+            add("details", f"{len(obj.data.bones)} bones")
         elif obj.type == "LIGHT":
-            parts.append(f"{obj.data.type.lower()} {r(obj.data.energy)}W")
+            add("details", f"{obj.data.type.lower()} {r(obj.data.energy)}W")
     if "materials" in F:
         mats = [s.material.name for s in getattr(obj, "material_slots", []) if s.material]
         if mats:
-            parts.append("mat " + ", ".join(mats[:3]) + ("..." if len(mats) > 3 else ""))
+            add("materials", "mat " + ", ".join(mats[:3]) + ("..." if len(mats) > 3 else ""))
     if "modifiers" in F and obj.modifiers:
-        parts.append("mods " + ", ".join(m.type.lower() for m in obj.modifiers))
+        add("modifiers", "mods " + ", ".join(m.type.lower() for m in obj.modifiers))
     if "animation" in F and obj.animation_data and obj.animation_data.action:
-        parts.append(f"anim {obj.animation_data.action.name}")
+        add("animation", f"anim {obj.animation_data.action.name}")
     if "hidden" in F and (obj.hide_get() or obj.hide_render):
-        parts.append("hidden")
+        add("hidden", "hidden")
     if "children" in F and obj.children:
-        parts.append(f"{len(obj.children)} children")
+        add("children", f"{len(obj.children)} children")
     if "topology" in F and obj.type == "MESH":
-        parts.append(topology(obj))
+        add("topology", topology(obj))
     if "weights" in F and obj.type == "MESH":
         w = weights(obj)
         if w:
-            parts.append(w)
+            add("weights", w)
+    objects.append({"name": obj.name, "type": obj.type, "fields": values})
     return " | ".join(parts)
 
 def topology(obj):
@@ -201,7 +208,7 @@ if "settings" in F:
         "world_hdri": hdri,
         "unit_scale": scene.unit_settings.scale_length,
     }
-return {"header": header, "lines": lines, "total": total, "shown": len(lines)}
+return {"header": header, "lines": lines, "objects": objects, "total": total, "shown": len(lines)}
 '''
 
 

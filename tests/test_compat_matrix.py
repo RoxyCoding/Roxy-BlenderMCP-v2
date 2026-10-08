@@ -213,7 +213,7 @@ def test_look_always_shows_something_or_says_how_to_fix_it(addon, mode):
 
 
 def test_scene_info_always_answers(addon):
-    reply = _run(server.get_scene_info(None))
+    reply = _text(_run(server.get_scene_info(None)))
     assert not reply.startswith("Error"), reply
 
 

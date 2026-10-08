@@ -589,7 +589,7 @@ async def get_scene_info(
     root: str | None = None,
     fields: list[str] | None = None,
     limit: int = 20,
-) -> str:
+) -> Any:
     """
     Facts about the scene as text: what's there, where, how big, and how healthy meshes and rigs
     are. No image; to see the scene, use look.
@@ -637,7 +637,20 @@ async def get_scene_info(
             error_msg = data["error"]
             return f"Error: {data['error']}"
         success = True
-        return _format_scene_summary(data, fields)
+        structured = {
+            **data["header"],
+            "selected_count": data["header"].get("selected_count", len(data["header"]["selected"])),
+            "columns": ["name", "type", *(f for f in blender_scripts.SCENE_FIELDS if f in fields and f != "settings")],
+            "objects": data.get("objects", []),
+            "shown": data["shown"],
+            "total": data["total"],
+        }
+        if "settings" not in fields:
+            structured.pop("settings", None)
+        return CallToolResult(
+            content=[TextContent(type="text", text=_format_scene_summary(data, fields))],
+            structuredContent=structured,
+        )
     except Exception as e:
         error_msg = str(e)
         logger.error(f"Error getting scene info from Blender: {str(e)}")
