@@ -1814,6 +1814,26 @@ for _guide in guides.all_guides().values():
 # the host UI, never by the model, and are hidden from clients without MCP Apps.
 
 _APP_ONLY = {"ui": {"visibility": ["app"]}}
+
+
+@mcp.tool(annotations=_READ_ONLY, meta=_APP_ONLY)
+def scene_state(since: int = 0) -> CallToolResult:
+    """Poll Blender's shared scene version; changed means version > since.
+
+    Versions last for this Blender/addon process and also advance on file loads.
+    """
+    try:
+        deadline = time.monotonic() + 5.0
+        blender = get_blender_connection(handshake=False, timeout=5.0)
+        state = blender.send_command("get_scene_state", read_only=True,
+                                     timeout=max(0.001, deadline - time.monotonic()))
+        state = {**state, "changed": state["version"] > since}
+        return CallToolResult(
+            content=[TextContent(type="text", text=f"Scene '{state['scene']}' | version {state['version']} | changed {state['changed']}")],
+            structuredContent=state,
+        )
+    except Exception as e:
+        return _app_error(missing_feature("scene state") if _addon_lacks(e) else f"Could not read scene state: {e}")
 _SCENE_ITEM_KINDS = ("object", "material", "collection")
 
 

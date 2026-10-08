@@ -39,7 +39,9 @@ bl_info = {
 }
 
 # Keep in sync with blender_mcp.addon_manager.EXPECTED_ADDON_PROTOCOL_VERSION.
-ADDON_PROTOCOL_VERSION = 19
+ADDON_PROTOCOL_VERSION = 20
+
+_scene_version = 0
 
 # Per-snapshot object cap for get_world_state_snapshot. Keep in sync with
 # blender_mcp.trajectory.MAX_SNAPSHOT_OBJECTS.
@@ -121,6 +123,8 @@ def _blendermcp_schedule_auto_start(delay=0.5):
 @persistent
 def _blendermcp_load_post(_unused):
     """Retry auto-start after Blender loads a startup file or another blend."""
+    global _scene_version
+    _scene_version += 1
     _blendermcp_schedule_auto_start()
 
 
@@ -130,6 +134,8 @@ def _blendermcp_register_auto_start():
     _user_stopped_server = False
     if _blendermcp_load_post not in bpy.app.handlers.load_post:
         bpy.app.handlers.load_post.append(_blendermcp_load_post)
+    if _blendermcp_depsgraph_post not in bpy.app.handlers.depsgraph_update_post:
+        bpy.app.handlers.depsgraph_update_post.append(_blendermcp_depsgraph_post)
     _blendermcp_schedule_auto_start()
 
 
@@ -137,6 +143,8 @@ def _blendermcp_unregister_auto_start():
     """Remove callbacks owned by the add-on before it is disabled."""
     if _blendermcp_load_post in bpy.app.handlers.load_post:
         bpy.app.handlers.load_post.remove(_blendermcp_load_post)
+    if _blendermcp_depsgraph_post in bpy.app.handlers.depsgraph_update_post:
+        bpy.app.handlers.depsgraph_update_post.remove(_blendermcp_depsgraph_post)
     if bpy.app.timers.is_registered(_blendermcp_ensure_server_running):
         bpy.app.timers.unregister(_blendermcp_ensure_server_running)
 
@@ -1019,7 +1027,8 @@ def _blendermcp_redo_post(scene, depsgraph=None):
 
 @persistent
 def _blendermcp_depsgraph_post(scene, depsgraph=None):
-    _edit_recorder.poll_operators()
+    global _scene_version
+    _scene_version += 1
 
 
 def _telemetry_consent_enabled():
@@ -1036,7 +1045,6 @@ def _register_edit_capture_handlers():
     handlers = [
         (bpy.app.handlers.undo_post, _blendermcp_undo_post),
         (bpy.app.handlers.redo_post, _blendermcp_redo_post),
-        (bpy.app.handlers.depsgraph_update_post, _blendermcp_depsgraph_post),
     ]
     for handler_list, fn in handlers:
         if fn not in handler_list:
@@ -1064,7 +1072,6 @@ def _unregister_edit_capture_handlers():
     handlers = [
         (bpy.app.handlers.undo_post, _blendermcp_undo_post),
         (bpy.app.handlers.redo_post, _blendermcp_redo_post),
-        (bpy.app.handlers.depsgraph_update_post, _blendermcp_depsgraph_post),
     ]
     for handler_list, fn in handlers:
         with suppress(ValueError):
@@ -1374,6 +1381,7 @@ class BlenderMCPServer:
         # Base handlers that are always available
         handlers = {
             "get_scene_info": self.get_scene_info,
+            "get_scene_state": self.get_scene_state,
             "get_world_state_snapshot": self.get_world_state_snapshot,
             "get_addon_info": self.get_addon_info,
             "get_object_info": self.get_object_info,
@@ -1439,6 +1447,7 @@ class BlenderMCPServer:
             "protocol_version": ADDON_PROTOCOL_VERSION,
             "capabilities": sorted([
                 "get_scene_info",
+                "get_scene_state",
                 "get_world_state_snapshot",
                 "get_addon_info",
                 "get_object_info",
@@ -1458,6 +1467,19 @@ class BlenderMCPServer:
                 "roxy_helpers",
             ]),
             "blender_version": bpy.app.version_string,
+        }
+
+    def get_scene_state(self):
+        """Lightweight state shared by every MCP client of this Blender process."""
+        active = bpy.context.view_layer.objects.active
+        return {
+            "version": _scene_version,
+            "file": bpy.data.filepath or None,
+            "is_dirty": bpy.data.is_dirty,
+            "scene": bpy.context.scene.name,
+            "mode": bpy.context.mode,
+            "active": active.name if active else None,
+            "selected_count": len(bpy.context.selected_objects),
         }
 
     def get_scene_info(self):
