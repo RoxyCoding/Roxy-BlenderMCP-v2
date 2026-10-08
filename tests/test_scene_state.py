@@ -79,7 +79,7 @@ def test_scene_state_returns_structured_data_and_short_timeout(monkeypatch, sinc
     connection.send_command.return_value = STATE
     get_connection = Mock(return_value=connection)
     monkeypatch.setattr(server, "get_blender_connection", get_connection)
-    result = server.scene_state(since)
+    result = asyncio.run(server.scene_state(since))
     assert result.structuredContent == {**STATE, "changed": changed}
     assert STATE == {k: v for k, v in result.structuredContent.items() if k != "changed"}
     get_connection.assert_called_once_with(handshake=False, timeout=5.0)
@@ -96,7 +96,7 @@ def test_scene_state_reports_old_addon_and_timeout(monkeypatch, error, expected)
     connection = Mock()
     connection.send_command.side_effect = error
     monkeypatch.setattr(server, "get_blender_connection", lambda **kwargs: connection)
-    result = server.scene_state()
+    result = asyncio.run(server.scene_state())
     assert result.isError is True and result.structuredContent is None
     assert expected in result.content[0].text
 
