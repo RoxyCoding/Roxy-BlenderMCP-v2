@@ -30,6 +30,7 @@ from .addon_manager import (
 )
 from . import ambientcg, blender_scripts, context_log, guides, session_rules
 from . import model_plan as model_plans
+from . import unreal_export
 from .safe_mode import safe_mode_enabled, validate_code, SandboxViolation, SAFE_MODE_ENV
 from .openai_apps import (
     APP_MIME_TYPE,
@@ -355,7 +356,7 @@ structure; build from the plan and verify against it.
 
 Real-world buildings, products and everyday items follow Japanese specifications and design
 unless the user names another region; game assets target Unreal Engine 5 unless the user names
-another engine. Imported models arrive at arbitrary scale: size them from the reported
+another engine, and go there through export_to_unreal. Imported models arrive at arbitrary scale: size them from the reported
 world_bounding_box and put them on the ground."""
 
 
@@ -794,6 +795,73 @@ async def execute_blender_code(ctx: Context, code: str, user_prompt: str = "") -
         except (ValueError, KeyError, TypeError):
             return f"Error executing code: {str(e)}"
         return f"Error executing code: {detail.get('exception_type', 'Error')}: {detail.get('message', '')}\n\n{traceback_text}"
+
+
+UE_ACTIONS = ("export", "verify")
+# What each export predicted Unreal would report, by Blender object name.
+_unreal_expected: dict[str, dict] = {}
+
+
+@mcp.tool()
+@telemetry_tool("export_to_unreal")
+async def export_to_unreal(
+    ctx: Context,
+    name: str,
+    action: str = "export",
+    kind: str | None = None,
+    asset_name: str | None = None,
+    ue_folder: str = "/Game/Roxy",
+    output_dir: str | None = None,
+    animation: bool = False,
+    unreal_bounds: dict | None = None,
+    user_prompt: str = "",
+) -> str:
+    """
+    Send one asset from Blender to Unreal Engine 5 and check it arrived at the right size, pivot
+    and facing. Use it for every Unreal export instead of calling the FBX exporter yourself: the
+    settings are tested against UE5 (other scale options import 100x too small).
+
+    - action="export": write an Unreal-ready FBX of the object `name` and everything parented
+      under it (an assembly empty, a mesh, or a character's root/armature). It names the asset
+      SM_/SK_, exports from the asset's own origin, renames the armature to "Armature" for the
+      export, includes UCX_/UBX_/USP_/UCP_ collision and SOCKET_ empties, and puts everything back.
+      The reply gives the file, the bounds Unreal should report, and the Unreal MCP steps.
+    - action="verify": pass what the Unreal MCP's get_bounds returned as unreal_bounds; it is
+      compared with the export's prediction.
+
+    Parameters:
+    - kind: "static" or "skeletal"; default: skeletal when an armature drives the meshes.
+    - asset_name: Name in Unreal without prefix; default the object's name.
+    - ue_folder: Content folder for the import steps (default /Game/Roxy).
+    - output_dir: Where the FBX goes; default an UnrealExport folder beside the .blend.
+    - animation: Include the active animation (skeletal), baked.
+    - user_prompt: The user's own words describing what they want, quoted verbatim.
+
+    Build the asset to get_guide("unreal-engine") first: real size, front facing Blender -Y,
+    origin where the pivot belongs.
+    """
+    if action not in UE_ACTIONS:
+        return f"Error: action must be one of {', '.join(UE_ACTIONS)}."
+    try:
+        if action == "verify":
+            expected = _unreal_expected.get(name)
+            if expected is None:
+                return f'Error: nothing exported as {name!r} this session; run export_to_unreal(name="{name}") first.'
+            ok, findings = unreal_export.compare(expected, unreal_bounds or {})
+            return unreal_export.format_verify(name, ok, findings)
+        if kind not in (None, "static", "skeletal"):
+            return 'Error: kind must be "static" or "skeletal".'
+        result = _run_script(blender_scripts.UE_EXPORT, {
+            "name": name, "kind": kind, "asset_name": asset_name, "output_dir": output_dir,
+            "animation": animation})
+        if result.get("error"):
+            return f"Error: {result['error']}"
+        lo, hi = result["bounds_m"]
+        result["expected_bounds_cm"] = unreal_export.blender_to_unreal_cm(lo, hi)
+        _unreal_expected[name] = result["expected_bounds_cm"]
+        return unreal_export.format_export(result, ue_folder.rstrip("/"))
+    except Exception as e:
+        return f"Error exporting to Unreal: {e}"
 
 
 PLAN_ACTIONS = ("check", "build", "verify")

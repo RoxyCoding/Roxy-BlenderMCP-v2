@@ -9,8 +9,6 @@ not called "Armature" becomes an extra root bone.
 
 from __future__ import annotations
 
-from typing import Any
-
 # Bounds may differ by bevels and float noise; anything beyond this is a real mismatch.
 BOUNDS_TOL_CM = 1.0
 BOUNDS_TOL_FRACTION = 0.01
@@ -108,5 +106,3 @@ def format_verify(name: str, ok: bool, findings: list[str]) -> str:
         return f"{name} in Unreal: OK - size, pivot and facing match the Blender export."
     return f"{name} in Unreal: NOT OK\n" + "\n".join(f"- {f}" for f in findings)
 
-
-Expected = dict[str, Any]

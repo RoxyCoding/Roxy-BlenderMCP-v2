@@ -69,6 +69,15 @@ for look development and previews.
 - Sockets: an empty named `SOCKET_<Name>` parented to the mesh, at the attach point and
   orientation (a lamp's bulb, a weapon's grip, a sign's mount). Include empties in the export.
 
+## Exporting: use export_to_unreal
+
+`export_to_unreal(name=...)` does the export for both static and skeletal meshes: SM_/SK_ naming,
+the asset's own origin as the pivot, the tested FBX settings, "Armature" as the armature's name,
+collision and sockets included, and the scene left as it was. It returns the file, the bounds
+Unreal should report and the Unreal MCP steps: `import_file`, `get_bounds`, then
+`export_to_unreal(action="verify", name=..., unreal_bounds=...)`, which names the cause when the
+size, pivot or facing is off. The settings it uses, for reference:
+
 ## Exporting static meshes
 
 Select the mesh with its collision and sockets, at the origin, then:

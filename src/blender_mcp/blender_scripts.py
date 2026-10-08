@@ -571,3 +571,105 @@ for x in root.children_recursive:
                      [round(max(p[i] for p in pts), 4) for i in range(3)]]
 return {"plan": root.get("roxy_plan"), "parts": parts}
 '''
+
+
+# export_to_unreal(action="export"): write an Unreal-ready FBX of one asset.
+# Moves the asset to the origin and renames its armature only for the export,
+# and always puts both back.
+UE_EXPORT = r'''
+import bpy, os, re
+from mathutils import Matrix, Vector
+root = bpy.data.objects.get(ARGS["name"])
+if root is None:
+    return {"error": "no object called " + ARGS["name"]}
+# matrix_world lags a just-changed location until the view layer updates; saving
+# the stale one would "restore" the asset to where it no longer is.
+bpy.context.view_layer.update()
+tree = [root] + list(root.children_recursive)
+arm = next((o for o in tree if o.type == "ARMATURE"), None)
+if arm is None:
+    for o in tree:
+        mod = next((m for m in getattr(o, "modifiers", []) if m.type == "ARMATURE" and m.object), None)
+        if mod:
+            arm = mod.object
+            break
+kind = ARGS.get("kind") or ("skeletal" if arm else "static")
+if kind == "skeletal" and arm is None:
+    return {"error": "kind is skeletal but no armature drives " + root.name}
+warnings = []
+raw = ARGS.get("asset_name") or root.name
+base = re.sub(r"^(SM|SK)_", "", re.sub(r"[^A-Za-z0-9_]+", "_", raw)).strip("_") or "Asset"
+if base != re.sub(r"^(SM|SK)_", "", raw):
+    warnings.append("asset name made ASCII-safe: " + base)
+asset = ("SK_" if kind == "skeletal" else "SM_") + base
+meshes = [o for o in tree if o.type == "MESH" and not o.hide_render
+          and not re.match(r"^(UCX|UBX|USP|UCP)_", o.name)]
+if kind == "skeletal":
+    meshes += [o for o in bpy.data.objects if o.type == "MESH" and o not in meshes and not o.hide_render
+               and any(m.type == "ARMATURE" and m.object == arm for m in o.modifiers)]
+if not meshes:
+    return {"error": root.name + " has no mesh to export"}
+collisions = [o for o in tree if o.type == "MESH" and re.match(r"^(UCX|UBX|USP|UCP)_", o.name)]
+sockets = [o for o in tree if o.type == "EMPTY" and o.name.startswith("SOCKET_")]
+for o in meshes:
+    if any(abs(s - 1) > 1e-4 for s in o.matrix_world.to_scale()):
+        warnings.append(o.name + " has unapplied scale; it exports correctly, but apply it for clean pivots")
+    if not o.data.uv_layers:
+        warnings.append(o.name + " has no UVs; textures won't map in Unreal")
+if kind == "skeletal" and any(abs(s - 1) > 1e-4 for s in arm.matrix_world.to_scale()):
+    warnings.append("the armature is scaled; apply its scale or bones import scaled")
+
+out_dir = ARGS.get("output_dir") or (os.path.join(os.path.dirname(bpy.data.filepath), "UnrealExport")
+                                     if bpy.data.filepath else os.path.join(bpy.app.tempdir or os.getcwd(), "UnrealExport"))
+os.makedirs(out_dir, exist_ok=True)
+path = os.path.join(out_dir, asset + ".fbx")
+
+saved_matrix = root.matrix_world.copy()
+saved_selection = [o for o in bpy.context.view_layer.objects if o.select_get()]
+saved_active = bpy.context.view_layer.objects.active
+renamed = []
+try:
+    _loc, _rot, scale = saved_matrix.decompose()
+    root.matrix_world = Matrix.LocRotScale(None, None, scale)
+    if kind == "skeletal" and arm.name != "Armature":
+        other = bpy.data.objects.get("Armature")
+        if other is not None:
+            renamed.append((other, other.name)); other.name = "__roxy_tmp_armature"
+        renamed.append((arm, arm.name)); arm.name = "Armature"
+    bpy.context.view_layer.update()
+    export = meshes + collisions + sockets + ([arm] if kind == "skeletal" else [])
+    for o in bpy.context.view_layer.objects:
+        o.select_set(o in export)
+    bpy.context.view_layer.objects.active = arm if kind == "skeletal" else meshes[0]
+    dg = bpy.context.evaluated_depsgraph_get()
+    pts, tris, materials = [], 0, []
+    for o in meshes:
+        ev = o.evaluated_get(dg)
+        pts += [ev.matrix_world @ Vector(c) for c in ev.bound_box]
+        me = ev.to_mesh()
+        tris += sum(len(p.vertices) - 2 for p in me.polygons)
+        ev.to_mesh_clear()
+        materials += [s.material.name for s in o.material_slots if s.material and s.material.name not in materials]
+    lo = [min(p[i] for p in pts) for i in range(3)]
+    hi = [max(p[i] for p in pts) for i in range(3)]
+    options = dict(filepath=path, use_selection=True, apply_scale_options="FBX_SCALE_NONE",
+                   mesh_smooth_type="FACE", use_tspace=True, use_triangles=True, use_mesh_modifiers=True,
+                   add_leaf_bones=False, bake_anim=bool(ARGS.get("animation")))
+    if kind == "skeletal":
+        options.update(object_types={"ARMATURE", "MESH", "EMPTY"}, use_armature_deform_only=True,
+                       primary_bone_axis="Y", secondary_bone_axis="X")
+    else:
+        options.update(object_types={"MESH", "EMPTY"})
+    bpy.ops.export_scene.fbx(**options)
+finally:
+    for o, name in reversed(renamed):
+        o.name = name
+    root.matrix_world = saved_matrix
+    for o in bpy.context.view_layer.objects:
+        o.select_set(o in saved_selection)
+    bpy.context.view_layer.objects.active = saved_active
+    bpy.context.view_layer.update()
+return {"name": root.name, "asset": asset, "kind": kind, "file": path, "bounds_m": [lo, hi],
+        "triangles": tris, "materials": materials, "sockets": [s.name for s in sockets],
+        "collisions": [c.name for c in collisions], "warnings": warnings}
+'''

@@ -28,7 +28,9 @@ says how to work out the Japanese version. A region the user names always wins.
 ## Game engine: Unreal Engine 5 by default
 
 Game assets target Unreal Engine 5 unless the user names another engine: naming, scale, pivots,
-Nanite, collision and FBX export follow get_guide("unreal-engine").
+Nanite and collision follow get_guide("unreal-engine"). Export with export_to_unreal, never the FBX
+exporter directly (its other scale options import 100x too small); when an Unreal MCP is connected,
+import with it and run export_to_unreal(action="verify") on the bounds Unreal reports.
 
 ## Assets
 
