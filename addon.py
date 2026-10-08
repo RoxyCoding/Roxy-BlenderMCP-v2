@@ -38,7 +38,7 @@ bl_info = {
 }
 
 # Keep in sync with blender_mcp.addon_manager.EXPECTED_ADDON_PROTOCOL_VERSION.
-ADDON_PROTOCOL_VERSION = 14
+ADDON_PROTOCOL_VERSION = 15
 
 # Per-snapshot object cap for get_world_state_snapshot. Keep in sync with
 # blender_mcp.trajectory.MAX_SNAPSHOT_OBJECTS.
@@ -1509,6 +1509,9 @@ class BlenderMCPServer:
             "get_polypizza_status": self.get_polypizza_status,
             "get_hunyuan3d_status": self.get_hunyuan3d_status,
             "export_scene": self.export_scene,
+            "save_checkpoint": save_checkpoint,
+            "list_checkpoints": list_checkpoints,
+            "restore_checkpoint": restore_checkpoint,
         }
 
         # Add Polyhaven handlers only if enabled
@@ -1593,6 +1596,9 @@ class BlenderMCPServer:
                 "drain_human_activity",
                 "get_telemetry_consent",
                 "set_telemetry_consent",
+                "save_checkpoint",
+                "list_checkpoints",
+                "restore_checkpoint",
             ]),
             "blender_version": bpy.app.version_string,
         }
@@ -4966,6 +4972,163 @@ class BlenderMCPServer:
                 shutil.rmtree(temp_dir)
     #endregion
 
+
+#region Checkpoints
+# Whole-file snapshots to roll back to. A checkpoint is a copy of the open
+# .blend (save_as_mainfile with copy=True, so the open file and its path stay
+# as they are) plus a JSON sidecar, kept in Blender's user datafiles folder.
+
+MAX_CHECKPOINTS = 30
+_CHECKPOINT_ID_RE = re.compile(r"^\d{8}-\d{6}-[0-9a-f]{4}$")
+# The last restore, which finishes after its command has replied.
+_checkpoint_restore = {"id": None, "state": "idle", "error": None, "file": None}
+
+
+def _checkpoint_dir():
+    return bpy.utils.user_resource('DATAFILES', path=osp.join("roxy_blender_mcp", "checkpoints"), create=True)
+
+
+def _checkpoint_ids(directory):
+    """Checkpoint ids, newest first."""
+    ids = [name[:-len(".blend")] for name in os.listdir(directory) if name.endswith(".blend")]
+    return sorted((i for i in ids if _CHECKPOINT_ID_RE.match(i)), reverse=True)
+
+
+def _checkpoint_meta(directory, checkpoint_id):
+    try:
+        with open(osp.join(directory, checkpoint_id + ".json"), encoding="utf-8") as f:
+            return json.load(f)
+    except (OSError, ValueError):
+        return {"id": checkpoint_id}
+
+
+def _in_window(operator, **kwargs):
+    """Run a file operator with a window in context; timers have none."""
+    wm = bpy.context.window_manager
+    window = bpy.context.window or (wm.windows[0] if wm and wm.windows else None)
+    if window is None or not hasattr(bpy.context, "temp_override"):
+        return operator(**kwargs)
+    with bpy.context.temp_override(window=window):
+        return operator(**kwargs)
+
+
+def _prune_checkpoints(directory):
+    removed = []
+    for checkpoint_id in _checkpoint_ids(directory)[MAX_CHECKPOINTS:]:
+        for suffix in (".blend", ".blend1", ".json"):
+            with suppress(OSError):
+                os.remove(osp.join(directory, checkpoint_id + suffix))
+        removed.append(checkpoint_id)
+    return removed
+
+
+def save_checkpoint(label=""):
+    directory = _checkpoint_dir()
+    checkpoint_id = time.strftime("%Y%m%d-%H%M%S") + "-" + uuid.uuid4().hex[:4]
+    path = osp.join(directory, checkpoint_id + ".blend")
+    _in_window(bpy.ops.wm.save_as_mainfile, filepath=path, copy=True, check_existing=False)
+    if not osp.isfile(path):
+        return {"error": "Blender did not write the checkpoint file."}
+    meta = {
+        "id": checkpoint_id,
+        "label": str(label or "")[:200],
+        "created": time.strftime("%Y-%m-%d %H:%M:%S"),
+        "source_file": bpy.data.filepath,
+        "scene": bpy.context.scene.name if bpy.context.scene else "",
+        "objects": len(bpy.data.objects),
+        "size_mb": round(osp.getsize(path) / 1_000_000, 2),
+    }
+    with open(osp.join(directory, checkpoint_id + ".json"), "w", encoding="utf-8") as f:
+        json.dump(meta, f, ensure_ascii=False, indent=1)
+    return {**meta, "pruned": _prune_checkpoints(directory)}
+
+
+def list_checkpoints(limit=20):
+    directory = _checkpoint_dir()
+    current = bpy.data.filepath
+    items = []
+    for checkpoint_id in _checkpoint_ids(directory)[:max(1, int(limit or 20))]:
+        meta = _checkpoint_meta(directory, checkpoint_id)
+        meta["this_file"] = meta.get("source_file") == current
+        items.append(meta)
+    return {"checkpoints": items, "folder": directory, "last_restore": dict(_checkpoint_restore)}
+
+
+def _restore_open(staging):
+    _in_window(bpy.ops.wm.open_mainfile, filepath=staging, load_ui=False)
+
+
+def _restore_finish(staging, target):
+    """Point the restored scene back at the user's file, so a later save goes there."""
+    try:
+        if target:
+            # Blender keeps the file being replaced as .blend1 (Save Versions).
+            _in_window(bpy.ops.wm.save_as_mainfile, filepath=target, check_existing=False)
+            with suppress(OSError):
+                os.remove(staging)
+        _checkpoint_restore.update(state="done", error=None, file=bpy.data.filepath)
+    except Exception as e:
+        _checkpoint_restore.update(state="error", error=str(e), file=bpy.data.filepath)
+
+
+def restore_checkpoint(checkpoint_id=""):
+    """Reload the file from a checkpoint. Saves the current state as a checkpoint first.
+
+    Loading a file from inside the command that asked for it would tear down
+    the context that command still runs in, so the load runs from its own
+    timer and the reply says only that it is scheduled; list_checkpoints'
+    last_restore reports when it is done.
+    """
+    checkpoint_id = str(checkpoint_id or "")
+    directory = _checkpoint_dir()
+    path = osp.join(directory, checkpoint_id + ".blend")
+    if not _CHECKPOINT_ID_RE.match(checkpoint_id) or not osp.isfile(path):
+        return {"error": f"No checkpoint {checkpoint_id!r}. List them to see which there are."}
+    if _checkpoint_restore["state"] == "pending":
+        return {"error": "A restore is already running."}
+
+    target = bpy.data.filepath
+    before = save_checkpoint(f"before restoring {checkpoint_id}")
+    if before.get("error"):
+        return {"error": f"Could not save the current state first, so nothing was restored: {before['error']}"}
+
+    # Open a copy, never the checkpoint itself, so saving the restored file
+    # can't overwrite a checkpoint.
+    restored_dir = osp.join(directory, "restored")
+    os.makedirs(restored_dir, exist_ok=True)
+    staging = osp.join(restored_dir, f"restored-{checkpoint_id}.blend")
+    shutil.copy2(path, staging)
+    _checkpoint_restore.update(id=checkpoint_id, state="pending", error=None, file=None)
+
+    if bpy.app.background:
+        # No event loop runs timers in background Blender; do it in line.
+        try:
+            _restore_open(staging)
+        except Exception as e:
+            _checkpoint_restore.update(state="error", error=str(e))
+        else:
+            _restore_finish(staging, target)
+    else:
+        def finish():
+            _restore_finish(staging, target)
+            return None
+
+        def load():
+            # Registered before the load and persistent, so it survives it.
+            bpy.app.timers.register(finish, first_interval=0.2, persistent=True)
+            try:
+                _restore_open(staging)
+            except Exception as e:
+                if bpy.app.timers.is_registered(finish):
+                    bpy.app.timers.unregister(finish)
+                _checkpoint_restore.update(state="error", error=str(e))
+            return None
+
+        bpy.app.timers.register(load, first_interval=0.1, persistent=True)
+
+    return {"scheduled": True, "id": checkpoint_id, "before_restore": before["id"], "file": target or None}
+
+#endregion
 
 # Blender Addon Preferences
 class BLENDERMCP_AddonPreferences(bpy.types.AddonPreferences):

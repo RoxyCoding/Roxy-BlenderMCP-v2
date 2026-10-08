@@ -12,6 +12,7 @@ from typing import AsyncIterator, Dict, Any
 import os
 import sys
 import time
+import asyncio
 import base64
 import re
 
@@ -27,7 +28,7 @@ from .addon_manager import (
     INSTALL_ADDON_COMMAND,
     check_addon_status_on_startup,
 )
-from . import blender_scripts, context_log, generation
+from . import blender_scripts, context_log, generation, guides
 from .safe_mode import safe_mode_enabled, validate_code, SandboxViolation, SAFE_MODE_ENV
 from .openai_apps import (
     APP_MIME_TYPE,
@@ -343,6 +344,8 @@ Scripts run in someone else's Blender:
 
 look is how you see your work; use it as much as you need. Images stay in the conversation, so
 a smaller max_size keeps long sessions cheap.
+
+Before a risky or sweeping change, checkpoint(action="save"); restore it if the result is worse.
 
 Objects can also come from existing libraries (search_assets, then import_asset: Poly Haven,
 Sketchfab, Poly Pizza) or be made to order (generate_3d: one new textured model from text or an
@@ -773,6 +776,94 @@ async def execute_blender_code(ctx: Context, code: str, user_prompt: str = "") -
         except (ValueError, KeyError, TypeError):
             return f"Error executing code: {str(e)}"
         return f"Error executing code: {detail.get('exception_type', 'Error')}: {detail.get('message', '')}\n\n{traceback_text}"
+
+
+CHECKPOINT_ACTIONS = ("save", "list", "restore")
+# A restore reloads the whole file; give a big one time to load.
+CHECKPOINT_RESTORE_WAIT_S = 60.0
+
+
+@mcp.tool()
+@telemetry_tool("checkpoint")
+async def checkpoint(
+    ctx: Context,
+    action: str = "save",
+    label: str = "",
+    id: str | None = None,
+    limit: int = 10,
+    user_prompt: str = "",
+) -> str:
+    """
+    Save the whole Blender file as a checkpoint, list checkpoints, or roll back to one.
+
+    Save one before a risky or sweeping change (deleting or rebuilding many objects, applying
+    modifiers, a long script), and when the user is happy with a state. Restore when a change made
+    things worse or the user asks to go back; Blender's own undo doesn't reach changes made here.
+
+    Parameters:
+    - action: save (default), list, or restore.
+    - label: For save: what this state is ("blockout done", "before relighting").
+    - id: For restore: a checkpoint id from save or list.
+    - limit: For list: how many, newest first (default 10).
+    - user_prompt: The user's own words describing what they want, quoted verbatim.
+
+    Restoring reloads the file: undo history is cleared, the state just before restoring is saved
+    as a checkpoint first, and the restored scene is saved back to the user's .blend (Blender keeps
+    the version it replaces as .blend1). Up to 30 checkpoints are kept; older ones are deleted.
+    """
+    if action not in CHECKPOINT_ACTIONS:
+        return f"Error: action must be one of {', '.join(CHECKPOINT_ACTIONS)}."
+    try:
+        blender = get_blender_connection()
+        if action == "save":
+            result = blender.send_command("save_checkpoint", {"label": label})
+            if result.get("error"):
+                return f"Error: {result['error']}"
+            reply = (f"Saved checkpoint {result['id']} ({result['objects']} objects, {result['size_mb']} MB). "
+                     f'Roll back with checkpoint(action="restore", id="{result["id"]}").')
+            if result.get("pruned"):
+                reply += f" Deleted the oldest: {', '.join(result['pruned'])}."
+            return reply
+
+        if action == "list":
+            result = blender.send_command("list_checkpoints", {"limit": max(1, min(int(limit or 10), 30))})
+            items = result.get("checkpoints") or []
+            if not items:
+                return "No checkpoints yet."
+            lines = [f"{c.get('id')}  {c.get('created', '')}  {c.get('objects', '?')} objects"
+                     + (f"  \"{c['label']}\"" if c.get("label") else "")
+                     + ("" if c.get("this_file") else f"  (from {c.get('source_file') or 'an unsaved file'})")
+                     for c in items]
+            return "Newest first:\n" + "\n".join(lines)
+
+        if not id:
+            return 'Error: restore needs id, from checkpoint(action="list").'
+        result = blender.send_command("restore_checkpoint", {"checkpoint_id": id})
+        if result.get("error"):
+            return f"Error: {result['error']}"
+        deadline = time.monotonic() + CHECKPOINT_RESTORE_WAIT_S
+        while time.monotonic() < deadline:
+            await asyncio.sleep(0.5)
+            try:
+                status = blender.send_command("list_checkpoints", {"limit": 1}).get("last_restore") or {}
+            except Exception:
+                continue  # Blender is busy loading the file
+            if status.get("id") != id or status.get("state") == "pending":
+                continue
+            if status.get("state") == "error":
+                return f"Error restoring {id}: {status.get('error')}"
+            reply = (f"Restored checkpoint {id}. The state before it is checkpoint {result['before_restore']}, "
+                     "if the user wants that back.")
+            if not result.get("file"):
+                reply += (f" The file was never saved, so it is now open as {status.get('file')}: "
+                          "ask the user to Save As where they want it.")
+            return reply
+        return (f"Restoring {id} is taking a while; check with get_scene_info. The state before it is "
+                f"checkpoint {result['before_restore']}.")
+    except Exception as e:
+        if _addon_lacks(e):
+            return missing_feature("checkpoints")
+        return f"Error with checkpoint: {e}"
 
 
 def _polyhaven_credit(result):
@@ -1847,9 +1938,23 @@ async def _import_asset(ctx, source, id, asset_type, target_size, apply_to, reso
         return _unavailable(source, e, "import")
 
 
-# Guides (guides/, guides.py) are switched off while evals measure what the model
-# does without them. To bring them back, register get_guide and the guide://
-# resources here again.
+@mcp.tool(annotations=ToolAnnotations(readOnlyHint=True))
+def get_guide(topic: str) -> str:
+    """Read a workflow guide: bpy, scene, level-design, animation, rigging,
+    retopology or materials. An unknown topic returns the available guide index.
+    """
+    return guides.get(topic)
+
+
+def _register_guide_resource(guide: guides.Guide) -> None:
+    @mcp.resource(f"guide://{guide.topic}", name=guide.title,
+                  description=guide.summary, mime_type="text/markdown")
+    def read_guide() -> str:
+        return guide.body
+
+
+for _guide in guides.all_guides().values():
+    _register_guide_resource(_guide)
 
 
 # MCP Apps and OpenAI extensions. Tools marked visibility ["app"] are called by

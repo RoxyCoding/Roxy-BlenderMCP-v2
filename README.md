@@ -40,6 +40,10 @@ To configure a client by hand, add:
 
 Then in Blender, press N in the 3D Viewport, open the **Roxy Blender MCP** tab and connect.
 
+## Checkpoints
+
+The `checkpoint` tool saves the whole .blend as a checkpoint, lists checkpoints, and rolls back to one. The assistant saves one before risky changes; you can also just ask it to ("save a checkpoint", "go back to the blockout"). Restoring first saves the current state as another checkpoint, then reloads the file and saves it back to your .blend (Blender keeps the replaced version as .blend1). Undo history is cleared by a restore. The newest 30 are kept in Blender's user `datafiles/roxy_blender_mcp/checkpoints` folder.
+
 ## Updating
 
 Update the checkout; clients pick up the new server the next time they start it. If the addon changed, copy it into Blender and restart Blender:

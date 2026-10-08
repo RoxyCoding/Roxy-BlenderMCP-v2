@@ -243,6 +243,7 @@ SCENE_CHANGING_COMMANDS = frozenset({
     "download_polypizza_model",
     "import_generated_asset",
     "import_generated_asset_hunyuan",
+    "restore_checkpoint",
 })
 
 # How long Blender must have been quiet before the app captures on its own, so
