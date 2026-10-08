@@ -2,7 +2,7 @@
 `roxy-blender-mcp setup`: configure the user's MCP clients and the Blender addon.
 
 Detects installed clients, adds a `blender` server entry that runs
-`uv run --directory <this checkout> roxy-blender-mcp` with uv by its absolute
+`uv run --no-sync --directory <this checkout> roxy-blender-mcp` with uv by its absolute
 path (GUI apps don't inherit the terminal's PATH, hence `spawn uv ENOENT`),
 installs the addon, and enables it by running Blender headless. The fork isn't
 on PyPI, so the entry never asks uvx to fetch a package by name.
@@ -299,7 +299,7 @@ def launch_args() -> list[str]:
     root = source_root()
     if root is None:
         raise RuntimeError("Run setup from the Roxy-BlenderMCP checkout: the server starts from there.")
-    return ["run", "--directory", str(root), PACKAGE]
+    return ["run", "--no-sync", "--directory", str(root), PACKAGE]
 
 
 def server_entry(style: str, uv: str) -> dict:
@@ -526,7 +526,7 @@ def describe_change(client: Client, uv: str, state: ClientState) -> str:
     """What configure_client would do, for --dry-run."""
     if client.kind == "json":
         verb = f'update "{state.entry_key}"' if state.status == OUTDATED else f'add "{SERVER_NAME}"'
-        return f"would {verb} in {client.config_path}"
+        return f"would {verb} in {client.config_path}: {json.dumps(server_entry(client.style, uv))}"
     return "would run: " + " && ".join(
         " ".join([Path(c[0]).name, *c[1:]]) for c in _cli_commands(client, uv, state)
     )
