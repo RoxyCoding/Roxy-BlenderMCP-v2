@@ -27,15 +27,19 @@ Unique names, no spaces, ASCII only (Japanese names break some tools and paths).
 
 ## Scale, axes and pivots
 
-- Model in metres at real size in Blender (scene Unit Scale 1.0); Unreal works in centimetres and
-  the FBX settings below convert. Check the result in Unreal against the Mannequin (about 1.8 m).
+- Model in metres at real size in Blender (scene Unit Scale 1.0); Unreal works in centimetres.
+  Keep the FBX exporter's default `apply_scale_options="FBX_SCALE_NONE"`: it writes the unit
+  conversion into the file and Unreal imports at the right size. `FBX_SCALE_ALL` and
+  `FBX_SCALE_UNITS` import 100x too small (tested on UE5 with Blender 5.1). Check the result
+  with the static mesh's bounds, which read in centimetres.
 - Apply scale and rotation on everything before export (`transform_apply`), or Unreal inherits
   odd scales and rotations.
 - The pivot in Unreal is the FBX origin. Export each asset sitting at the world origin with its
   pivot where it should be: bottom centre for props and furniture, the hinge for doors, the
   corner for modular kit pieces (`get_guide("level-design")`).
-- Keep Blender's default FBX axes (forward -Z, up Y); Unreal converts them. If an asset imports
-  facing the wrong way, rotate it in Blender and apply, rather than fixing it in Unreal.
+- Keep Blender's default FBX axes (forward -Z, up Y); Unreal converts them. Blender +X stays +X
+  and up stays up, but Y flips: Blender's -Y (an object's front) becomes Unreal's +Y. If an asset
+  imports facing the wrong way, rotate it in Blender and apply, rather than fixing it in Unreal.
 
 ## Nanite, LODs and polygon budgets
 
@@ -72,7 +76,7 @@ Select the mesh with its collision and sockets, at the origin, then:
 ```python
 bpy.ops.export_scene.fbx(filepath=path, use_selection=True,
     object_types={"MESH", "EMPTY"},
-    apply_scale_options="FBX_SCALE_ALL",
+    apply_scale_options="FBX_SCALE_NONE",   # the default; the others import 100x too small
     mesh_smooth_type="FACE",       # writes smoothing groups; avoids Unreal's missing-smoothing warning
     use_tspace=True,               # tangents; fails on n-gons, so triangulate or set use_triangles=True
     use_mesh_modifiers=True,       # applies modifiers (bevels, weighted normals) in the exported mesh
@@ -99,9 +103,11 @@ material, fed by exported textures.
 
 - Follow `get_guide("rigging")` for the rig, then export only the deform skeleton and meshes
   (FBX settings there: `add_leaf_bones=False`, `use_armature_deform_only=True`,
-  `primary_bone_axis="Y"`, `secondary_bone_axis="X"`, `apply_scale_options="FBX_SCALE_ALL"`).
+  `primary_bone_axis="Y"`, `secondary_bone_axis="X"`, `apply_scale_options="FBX_SCALE_NONE"`).
 - One root bone at the origin that everything hangs from, and name the armature object
-  `Armature`, or Unreal adds an extra root bone above it.
+  `Armature`: any other name becomes an extra root bone above it (tested: an armature called
+  `Rig` imported as Rig > root > ...). A non-deforming root bone is still exported as the
+  parent of the deform bones.
 - Characters meant to use Unreal animations: model in the Mannequin's proportions and A-pose,
   keep its bone structure if possible, and retarget in Unreal with an IK Rig and IK Retargeter
   (UE5 Manny/Quinn), rather than renaming bones in Blender.

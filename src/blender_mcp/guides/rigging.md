@@ -344,14 +344,15 @@ should get: the deform skeleton and the meshes. Select them, then:
       add_leaf_bones=False,              # no extra _end bones
       use_armature_deform_only=True,     # drop controls; for Rigify, only the DEF- bones
       primary_bone_axis="Y", secondary_bone_axis="X",
-      apply_scale_options="FBX_SCALE_ALL",
+      apply_scale_options="FBX_SCALE_NONE",  # the default; FBX_SCALE_ALL/UNITS import 100x small in UE
       bake_anim=False)                   # True when exporting animation
   ```
   Unreal: model in metres at real size. An armature object named anything but "Armature" is
   imported as an extra root bone, so either name it "Armature" or give the rig a real `root` bone
-  at the origin that everything else hangs from. After import, check the skeleton's root has no
-  100x scale; if it does, check the scene's Unit Scale (`scene.unit_settings.scale_length`) is 1.0
-  and the rig and meshes have applied scale, then export again.
+  at the origin that everything else hangs from. After import, check the size (bounds read in
+  centimetres); if it is off by 100x, check `apply_scale_options` is FBX_SCALE_NONE, the scene's
+  Unit Scale (`scene.unit_settings.scale_length`) is 1.0 and the rig and meshes have applied
+  scale, then export again.
 - **glTF (Godot, three.js, Unity with glTFast):** `bpy.ops.export_scene.gltf(filepath=path,
   use_selection=True, export_def_bones=True)` exports deform bones only.
 - Rigify's `DEF-` bones are not all parented to each other in the rig itself; deform-only export
