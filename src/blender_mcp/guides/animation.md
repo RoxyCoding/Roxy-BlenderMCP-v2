@@ -111,7 +111,9 @@ bpy.ops.object.mode_set(mode="OBJECT")
 
 Export with FBX `bake_anim=True` (`bake_anim_use_all_actions=False` to export only the active
 action, `bake_anim_use_nla_strips=True` to export each NLA strip as its own clip), or glTF, which
-exports actions as animations. See `get_guide("rigging")` for the skeleton side of the export.
+exports actions as animations. See `get_guide("rigging")` for the skeleton side of the export,
+and `get_guide("unreal-engine")` for Unreal Engine 5, the default engine (frame rate, root
+motion, importing onto an existing skeleton).
 
 ## Checking motion
 

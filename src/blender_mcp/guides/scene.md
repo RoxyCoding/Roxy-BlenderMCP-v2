@@ -18,22 +18,21 @@ summary: Building a believable scene - real-world (by default Japanese) scale an
 
 ## Getting assets
 
-- **Generate** (`generate_3d`) hero objects and anything specific or unusual: "a rusted
-  steampunk diving helmet". One object per generation — never a whole scene, the ground, or parts
-  to assemble. Generate once and duplicate (`obj.copy()`) for repeats.
 - **Poly Haven** (`search_assets(source="polyhaven")`): HDRIs, PBR textures for large surfaces
   (floors, walls, terrain), and generic realistic props. CC0.
+- **ambientCG** (`source="ambientcg"`): CC0 PBR materials Poly Haven lacks, including Japanese
+  surfaces such as tatami.
 - **Sketchfab**: specific real-world things (a named car model, a landmark), and realistic props.
   Check the licence and face count in results.
-- **Poly Pizza**: stylised low-poly props, fast and light. Credit CC-BY creators.
-- **Script it** only for simple or procedural geometry: walls, floors, shelves, stairs, fences,
-  arrays, scattering.
+- **Script it** for simple or procedural geometry: walls, floors, shelves, stairs, fences,
+  arrays, scattering (`get_guide("geometry-nodes")`). Import once and duplicate (`obj.copy()`) for
+  repeats.
 
-Match the style. Don't mix low-poly Poly Pizza props with photoreal Sketchfab scans in one frame.
+Match the style. Don't mix stylised low-poly props with photoreal scans in one frame.
 
 Library assets are mostly American or European. In a Japanese setting, check each one for what
 gives the wrong country away (sockets, signs, text, number plates, steering side, door and
-furniture sizes) and replace or edit it; ask `generate_3d` for "Japanese ..." explicitly.
+furniture sizes) and replace or edit it, or model the Japanese version yourself.
 
 ## After every import
 

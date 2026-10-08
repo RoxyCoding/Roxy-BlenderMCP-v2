@@ -71,10 +71,16 @@ from a Weighted Normal modifier after any Bevel.
 
 ## Game LODs
 
+In Unreal Engine 5 (the default engine) static meshes with opaque or masked materials use
+Nanite and need no LODs: keep them detailed and clean instead. LODs matter for skeletal meshes,
+translucent meshes and other engines.
+
 Make each LOD from the finished LOD0 with Decimate (collapse) and keep UVs: about 50%, 25% and
-10% of LOD0's triangles. Name them `<Name>_LOD0`, `_LOD1`... (Unreal and Unity both pick these
-up on FBX import; Unreal also expects `SM_` on the name). Check each with
-`get_scene_info(fields=["topology"])` and from the distance it will be seen at.
+10% of LOD0's triangles. Unreal reads LODs only from an FBX LOD group, which Blender doesn't
+write: export each LOD as its own FBX (`SM_Crate_LOD1.fbx`) for the Static Mesh Editor's LOD
+slots, or let Unreal generate them (`get_guide("unreal-engine")`). Unity picks up `_LOD0`,
+`_LOD1`... names in one FBX. Check each with `get_scene_info(fields=["topology"])` and from the
+distance it will be seen at.
 
 ## UVs
 

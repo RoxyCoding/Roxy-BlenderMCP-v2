@@ -9,7 +9,8 @@ It connects an MCP client (Claude Desktop, Claude Code, Cursor, VS Code, Codex, 
 - **Its own name.** The package and command are `roxy-blender-mcp`, and the Blender addon shows up as "Roxy Blender MCP". It isn't published on PyPI: MCP clients run it from this checkout.
 - **No data collection.** Telemetry, trajectory recording and the consent prompt are switched off in code, and the `disable_telemetry` and `record_trajectory_feedback` tools are gone. Nothing is sent anywhere.
 - **No self-update.** The addon no longer downloads itself from upstream's GitHub, and `update` no longer checks PyPI, so nothing replaces this fork with upstream's code.
-- **No Premium.** Upstream's paid generation service is removed, along with Tripo, which only ran through it. Hyper3D Rodin and Hunyuan3D still work with your own API keys.
+- **No AI model generation, no Premium.** Upstream's paid Premium service, Tripo, Hyper3D Rodin and Hunyuan3D are removed, and with them the `generate_3d` tool. Poly Pizza is removed too.
+- **ambientCG.** CC0 PBR materials from [ambientCG](https://ambientcg.com) alongside Poly Haven, including Japanese surfaces such as tatami.
 
 ## Setup
 

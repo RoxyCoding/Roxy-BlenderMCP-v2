@@ -16,7 +16,7 @@
   "interface": {
     "displayName": "Roxy Blender MCP",
     "shortDescription": "Build 3D scenes in Blender",
-    "longDescription": "An independently maintained fork of the open-source MCP for Blender. Not affiliated with or endorsed by the Blender Foundation. Connects Codex to a running Blender through the Roxy Blender MCP addon. Create and edit objects, materials and lighting, pull free assets from Poly Haven, Sketchfab and Poly Pizza with a visual picker, @-mention scene objects, and watch the viewport beside the conversation.",
+    "longDescription": "An independently maintained fork of the open-source MCP for Blender. Not affiliated with or endorsed by the Blender Foundation. Connects Codex to a running Blender through the Roxy Blender MCP addon. Create and edit objects, materials and lighting, pull free assets from Poly Haven, ambientCG and Sketchfab with a visual picker, @-mention scene objects, and watch the viewport beside the conversation.",
     "developerName": "Roxy-BlenderMCP",
     "category": "Design",
     "capabilities": [
@@ -26,7 +26,7 @@
     ],
     "defaultPrompt": [
       "Open the Blender viewport",
-      "Add a wooden chair from Poly Pizza"
+      "Put a tatami floor from ambientCG in the room"
     ],
     "composerIcon": "./assets/icon.svg",
     "logo": "./assets/logo.png"

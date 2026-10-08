@@ -51,17 +51,19 @@ unless the user names another region (`get_guide("japanese-design")`).
 ## Engine-ready output
 
 - Apply transforms (scale 1, rotation 0) on every exported mesh.
-- Name for the engine's conventions.
+- The engine is Unreal Engine 5 unless the user names another: follow `get_guide("unreal-engine")`
+  for naming, pivots, collision, sockets, Nanite and the FBX export settings.
   - Unreal: `SM_` for static meshes; collision meshes named after their render mesh, with
     `UBX_` (box), `USP_` (sphere), `UCP_` (capsule) or `UCX_` (convex) and a number:
-    `UCX_SM_Wall_01`, `UCX_SM_Wall_02` for `SM_Wall`. LODs as `SM_Wall_LOD0`, `_LOD1`...
+    `UCX_SM_Wall_01`, `UCX_SM_Wall_02` for `SM_Wall`.
   - Godot: `-col` / `-colonly` suffixes. Unity: separate low-poly collision meshes.
 - Keep collision simple: boxes and convex hulls, not the render mesh.
-- Triangle budgets depend on platform; report counts with `get_scene_info(fields=["topology"])`.
-- Export with `bpy.ops.export_scene.gltf` (Godot, web, most engines) or `export_scene.fbx`
-  (Unity, Unreal). Read each operator's arguments first; they change between versions.
-- Lightmap UVs go in a second UV map when the engine bakes lighting: islands may not overlap and
-  need padding. Keep the first map for textures:
+- Triangle budgets: Nanite static meshes in UE5 can stay detailed; skeletal, translucent and
+  non-Nanite meshes need budgets. Report counts with `get_scene_info(fields=["topology"])`.
+- Export FBX for Unreal (settings in `get_guide("unreal-engine")`); glTF (`export_scene.gltf`) for
+  Godot and the web. Read each operator's arguments first; they change between versions.
+- Lightmap UVs go in a second UV map only when the engine bakes lighting (UE5 with Lumen
+  doesn't need them): islands may not overlap and need padding. Keep the first map for textures:
 
 ```python
 lm = obj.data.uv_layers.new(name="Lightmap")
@@ -70,5 +72,5 @@ obj.select_set(True)                    # every mesh to pack, selected
 bpy.ops.uv.lightmap_pack(PREF_CONTEXT="ALL_FACES", PREF_MARGIN_DIV=0.2)
 ```
 
-- LODs for larger props and buildings: see `get_guide("retopology")`. For rigged characters and
+- LODs (non-Nanite meshes): see `get_guide("retopology")`. For rigged characters and
   their animation, `get_guide("rigging")` and `get_guide("animation")` cover the export settings.

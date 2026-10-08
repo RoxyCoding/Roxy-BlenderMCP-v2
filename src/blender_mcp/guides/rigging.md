@@ -19,9 +19,9 @@ before preparing the mesh, before skinning, and once the rig deforms well.
   reason to delete geometry or remesh the original.
 - Characters rig best in A-pose or T-pose with a bit of bend at elbows and knees.
 
-Inspect models from `generate_3d` or a library for arbitrary scale and facing, triangulation,
+Inspect models from a library for arbitrary scale and facing, triangulation,
 islands and inner faces. Prepare only what needs fixing. If automatic weights fail, preserve the
-textured original and try a voxel-remeshed copy for weight transfer (see Skinning). A generated character in a relaxed pose
+textured original and try a voxel-remeshed copy for weight transfer (see Skinning). A library character in a relaxed pose
 with arms down still rigs, but the shoulders deform worse than from an A-pose.
 
 ## Humans and animals: Rigify
@@ -334,7 +334,9 @@ objects and newly created test data. Never delete the original Action to clean u
 
 ## Exporting rigs to game engines
 
-Export only what the engine should get: the deform skeleton and the meshes. Select them, then:
+The engine is Unreal Engine 5 unless the user names another; `get_guide("unreal-engine")` covers
+naming (`SK_`, `A_`), the Mannequin, retargeting and root motion. Export only what the engine
+should get: the deform skeleton and the meshes. Select them, then:
 
 - **FBX (Unreal, Unity):**
   ```python

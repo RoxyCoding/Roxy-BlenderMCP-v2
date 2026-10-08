@@ -36,9 +36,10 @@ out the Japanese version before modelling it:
 5. **Habits and climate.** Shoes off indoors, separate bath and toilet, futons and low tables in
    washitsu, sliding doors, wet seasons and snow in the north: these decide what is present and
    where it goes.
-6. **Library and generated assets.** Most are American or European. Check each against the points
+6. **Library and generated assets.** Most are American or European. For materials, ambientCG
+   (`search_assets(source="ambientcg")`) has some Japanese surfaces Poly Haven lacks, such as tatami. Check each against the points
    above: replace or edit what gives the wrong country away (sockets, plates, signs, steering side,
-   text), and prompt `generate_3d` for the Japanese version explicitly ("Japanese ...").
+   text), or model the Japanese version when no library has it.
 
 When the Japanese version is genuinely unclear or varies a lot (by maker, era or region), pick the
 most common current one and tell the user which you assumed.

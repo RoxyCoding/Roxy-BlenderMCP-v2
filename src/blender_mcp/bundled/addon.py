@@ -38,7 +38,7 @@ bl_info = {
 }
 
 # Keep in sync with blender_mcp.addon_manager.EXPECTED_ADDON_PROTOCOL_VERSION.
-ADDON_PROTOCOL_VERSION = 15
+ADDON_PROTOCOL_VERSION = 17
 
 # Per-snapshot object cap for get_world_state_snapshot. Keep in sync with
 # blender_mcp.trajectory.MAX_SNAPSHOT_OBJECTS.
@@ -49,7 +49,6 @@ MAX_SNAPSHOT_OBJECTS = 4000
 # Keep in sync with blender_mcp.trajectory.MAX_SNAPSHOT_SELECTED.
 MAX_SNAPSHOT_SELECTED = 1000
 
-RODIN_FREE_TRIAL_KEY = "vibecoding"
 
 # Add User-Agent as required by Poly Haven API
 REQ_HEADERS = requests.utils.default_headers()
@@ -140,129 +139,13 @@ def _blendermcp_unregister_auto_start():
     if bpy.app.timers.is_registered(_blendermcp_ensure_server_running):
         bpy.app.timers.unregister(_blendermcp_ensure_server_running)
 
-#region Poly Pizza constants and helpers
-
-POLYPIZZA_API_BASE = "https://api.poly.pizza/v1.1"
-
-# The MCP server resolves human-friendly category/licence names to the numeric
-# ids the API filters on, so only ids arrive here. Every query parameter of
-# the API is Capitalized (Limit, Page, Category, License, Animated — see
-# poly.pizza/apispec/v1.1.yaml): lowercase variants are accepted with HTTP 200
-# and then silently ignored, so the capitalisation is load-bearing.
-
-
-def _polypizza_category_id(category):
-    """Validate a numeric category id (names are resolved by the MCP server)."""
-    if category is None or category == "":
-        return None
-    if isinstance(category, bool) or not (
-        isinstance(category, int)
-        or (isinstance(category, str) and category.strip().lstrip("-").isdigit())
-    ):
-        raise ValueError(f"Poly Pizza category must be a numeric id in 0-11, got {category!r}")
-    value = int(category)
-    if not 0 <= value <= 11:
-        raise ValueError(f"Poly Pizza category id {value} is out of range (valid ids are 0-11)")
-    return value
-
-
-def _polypizza_licence_id(licence):
-    """Validate a numeric licence id (names are resolved by the MCP server)."""
-    if licence is None or licence == "":
-        return None
-    if isinstance(licence, bool) or not (
-        isinstance(licence, int)
-        or (isinstance(licence, str) and licence.strip().lstrip("-").isdigit())
-    ):
-        raise ValueError(f"Poly Pizza licence must be 0 (CC-BY) or 1 (CC0), got {licence!r}")
-    value = int(licence)
-    if value not in (0, 1):
-        raise ValueError(f"Poly Pizza licence id {value} is invalid (0 = CC-BY, 1 = CC0)")
-    return value
-
-
-def _polypizza_filter_params(category=None, licence=None, animated=False):
-    """Build the query filters for a Poly Pizza search.
-
-    Keys are Capitalized and values numeric because the API silently ignores
-    anything else. `Animated` is omitted unless animated-only results were asked
-    for: the server treats `Animated=0` as falsy and does not filter on it.
-    """
-    params = {}
-    category_id = _polypizza_category_id(category)
-    if category_id is not None:
-        params["Category"] = category_id
-    licence_id = _polypizza_licence_id(licence)
-    if licence_id is not None:
-        params["License"] = licence_id
-    if animated:
-        params["Animated"] = 1
-    return params
-
-
-def _polypizza_summarize_model(model):
-    """Trim an API record down to the fields worth sending back over MCP."""
-    creator = model.get("Creator") or {}
-    return {
-        "ID": model.get("ID"),
-        "Title": model.get("Title"),
-        "Creator": creator.get("Username") if isinstance(creator, dict) else None,
-        "Licence": model.get("Licence"),
-        "Tri Count": model.get("Tri Count"),
-        "Animated": bool(model.get("Animated")),
-        "Category": model.get("Category"),
-        "Tags": model.get("Tags") or [],
-        "Thumbnail": model.get("Thumbnail"),
-    }
-
-
-def _polypizza_cdn_error(status_code, headers, content):
-    """Describe a CDN response that is not a GLB, or None when it is one.
-
-    static.poly.pizza sits behind Cloudflare bot management and answers 403 with
-    an HTML challenge from datacenter IPs. That is neither an auth failure nor a
-    missing model, so it gets its own message.
-    """
-    if status_code == 200 and content[:4] == b"glTF":
-        return None
-
-    headers = headers or {}
-    content_type = ""
-    for key in ("Content-Type", "content-type"):
-        value = headers.get(key)
-        if value:
-            content_type = str(value).lower()
-            break
-
-    challenged = bool(headers.get("cf-mitigated") or headers.get("Cf-Mitigated"))
-    looks_like_html = "text/html" in content_type or content[:1] == b"<"
-
-    if challenged or (looks_like_html and status_code != 200):
-        return (
-            f"Poly Pizza's CDN returned a Cloudflare bot-protection challenge (HTTP {status_code}) "
-            "instead of the model file. This is not an API key problem - static.poly.pizza takes no "
-            "API key - and the model exists. The CDN blocks datacenter, VPN and cloud IPs; retry from "
-            "a residential connection, or download the .glb by hand from https://poly.pizza and import "
-            "it with File > Import > glTF 2.0."
-        )
-    if status_code != 200:
-        return f"Poly Pizza model file download failed with status code {status_code}"
-    if looks_like_html:
-        return (
-            "Poly Pizza's CDN returned an HTML page instead of a GLB file. The download link may have "
-            "expired; search again to get a fresh one."
-        )
-    return "Poly Pizza returned a file that is not a valid GLB (missing glTF magic bytes)"
-
-#endregion
-
 #region Poly Haven constants and helpers
 
 POLYHAVEN_API_BASE = "https://api.polyhaven.com"
 
 # Versioned, so Poly Haven can tell which integration its traffic is coming from
-# and how many people it is serving. Kept separate from the shared REQ_HEADERS
-# because Poly Pizza sends that one too.
+# and how many people it is serving. Kept separate from the shared REQ_HEADERS,
+# which other integrations send too.
 POLYHAVEN_HEADERS = dict(REQ_HEADERS)
 POLYHAVEN_HEADERS["User-Agent"] = (
     "roxy-blender-mcp/" + ".".join(str(part) for part in bl_info["version"])
@@ -824,8 +707,7 @@ def _polyhaven_tag(datablocks, asset_id, resolution=None, authors=None, dimensio
     left the download path and set_texture disagreeing about what a map was
     called.
 
-    It is also where the asset came from, in the same shape the Poly Pizza
-    integration writes its polypizza_* properties. Poly Haven's assets are CC0
+    It is also where the asset came from. Poly Haven's assets are CC0
     and require no attribution, ever - but custom properties are saved into the
     .blend, so whoever opens the file in a year can still find the asset's page,
     who made it, and the resolutions they did not download.
@@ -855,6 +737,77 @@ def _polyhaven_tag(datablocks, asset_id, resolution=None, authors=None, dimensio
                 block["polyhaven_scale_mm"] = list(dimensions)
             elif "polyhaven_scale_mm" in block.keys():
                 del block["polyhaven_scale_mm"]
+
+#endregion
+
+
+#region ambientCG constants and helpers
+# ambientCG (https://ambientcg.com): CC0 PBR materials, searched by the MCP
+# server and downloaded here, so the files land where Blender can read them.
+# A download is one zip per resolution and format holding every map plus
+# files this doesn't use (.blend, .usdc, .mtlx, a preview image).
+
+AMBIENTCG_API = "https://ambientcg.com/api/v3/assets"
+AMBIENTCG_SITE = "https://ambientcg.com"
+AMBIENTCG_ID_RE = re.compile(r"^[A-Za-z0-9_-]{1,80}$")
+AMBIENTCG_RESOLUTIONS = ("1K", "2K", "4K", "8K")
+AMBIENTCG_FORMATS = ("JPG", "PNG")
+# Map name in the zip -> the role it plays. NormalGL is Blender's normal map
+# convention; the NormalDX copy (Unreal's) and AmbientOcclusion aren't wired.
+AMBIENTCG_MAPS = {
+    "Color": "base_color",
+    "Roughness": "roughness",
+    "Metalness": "metallic",
+    "NormalGL": "normal",
+    "Displacement": "displacement",
+    "Opacity": "alpha",
+}
+# Far above any real material zip (8K-PNG is about 1GB unpacked), so a broken
+# or hostile archive can't fill the disk.
+AMBIENTCG_MAX_UNPACKED = 4 * 1024 ** 3
+AMBIENTCG_HEADERS = dict(REQ_HEADERS)
+
+
+def _ambientcg_asset(asset_id):
+    """The asset's API record (downloads, dimensions, maps), or None."""
+    response = requests.get(
+        AMBIENTCG_API,
+        params={"id": asset_id, "include": "downloads,dimensions,maps"},
+        headers=AMBIENTCG_HEADERS,
+        timeout=(10, 30),
+    )
+    response.raise_for_status()
+    return next((a for a in response.json().get("assets") or [] if a.get("id") == asset_id), None)
+
+
+def _ambientcg_extract_maps(zip_path, dest_dir):
+    """{map name: file path} for the texture maps in a download; everything else is skipped."""
+    found = {}
+    with zipfile.ZipFile(zip_path) as archive:
+        members = archive.infolist()
+        if sum(m.file_size for m in members) > AMBIENTCG_MAX_UNPACKED:
+            raise ValueError("archive is larger than any ambientCG material should be")
+        for member in members:
+            # Only the file name: paths inside an archive are never trusted.
+            name = osp.basename(member.filename)
+            stem, ext = osp.splitext(name)
+            if ext.lower() not in (".jpg", ".jpeg", ".png") or "_" not in stem:
+                continue
+            map_name = stem.rsplit("_", 1)[1]
+            if map_name not in AMBIENTCG_MAPS:
+                continue
+            path = osp.join(dest_dir, name)
+            with archive.open(member) as src, open(path, "wb") as dst:
+                shutil.copyfileobj(src, dst)
+            found[map_name] = path
+    return found
+
+
+def _ambientcg_size_m(asset):
+    """(width, height) in metres the texture covers, or None when ambientCG doesn't say (cm, 0 = unknown)."""
+    dims = asset.get("dimensions") or {}
+    width, height = dims.get("width") or 0, dims.get("height") or 0
+    return (width / 100, height / 100) if width > 0 and height > 0 else None
 
 #endregion
 
@@ -1125,37 +1078,6 @@ def get_blendermcp_addon_preferences(context=None):
     addon = context.preferences.addons.get(__name__)
     return addon.preferences if addon else None
 
-# Tencent Cloud exposes Hunyuan-to-3D through two different services depending on where the
-# account was created. Mainland accounts (cloud.tencent.com) use the AI3D 3.0 API. Tencent Cloud
-# International accounts (tencentcloud.com) use the "Hunyuan-to-3D (Professional)" service on the
-# older hunyuan API in ap-singapore; it rejects the mainland body fields and expects EnablePBR.
-# Sending International credentials to the mainland endpoint fails with
-# AuthFailure.SignatureFailure / ResourceUnavailable.
-HUNYUAN_API_PROFILES = {
-    "mainland": {
-        "service": "ai3d",
-        "version": "2025-05-13",
-        "region": "ap-guangzhou",
-        "submit_action": "SubmitHunyuanTo3DProJob",
-        "query_action": "QueryHunyuanTo3DProJob",
-        "submit_body": {},
-    },
-    "international_pro": {
-        "service": "hunyuan",
-        "version": "2023-09-01",
-        "region": "ap-singapore",
-        "submit_action": "SubmitHunyuanTo3DProJob",
-        "query_action": "QueryHunyuanTo3DProJob",
-        "submit_body": {"EnablePBR": True},
-    },
-}
-
-
-def hunyuan_api_profile(international_pro: bool) -> dict:
-    """Return a copy of the Tencent Cloud API profile for the selected account type."""
-    profile = HUNYUAN_API_PROFILES["international_pro" if international_pro else "mainland"]
-    return {**profile, "submit_body": dict(profile["submit_body"])}
-
 
 # Object types with no surface for a ray to hit, picked by their origin instead.
 _PICK_BY_ORIGIN = {"LIGHT", "CAMERA", "EMPTY", "LIGHT_PROBE", "SPEAKER", "FORCE_FIELD"}
@@ -1206,52 +1128,12 @@ class BlenderMCPServer:
                 return env_value
         return ""
 
-    def _get_hyper3d_api_key(self):
-        # Let the free-trial button temporarily override persistent keys
-        # without overwriting user-saved private keys.
-        scene_value = getattr(bpy.context.scene, "blendermcp_hyper3d_api_key", "")
-        if scene_value == RODIN_FREE_TRIAL_KEY:
-            return scene_value
-        return self._get_config_value(
-            "blendermcp_hyper3d_api_key",
-            "hyper3d_api_key",
-            "BLENDERMCP_HYPER3D_API_KEY",
-        )
-
     def _get_sketchfab_api_key(self):
         return self._get_config_value(
             "blendermcp_sketchfab_api_key",
             "sketchfab_api_key",
             "BLENDERMCP_SKETCHFAB_API_KEY",
         )
-
-    def _get_polypizza_api_key(self):
-        return self._get_config_value(
-            "blendermcp_polypizza_api_key",
-            "polypizza_api_key",
-            "BLENDERMCP_POLYPIZZA_API_KEY",
-        )
-
-    def _get_hunyuan3d_secret_id(self):
-        return self._get_config_value(
-            "blendermcp_hunyuan3d_secret_id",
-            "hunyuan3d_secret_id",
-            "BLENDERMCP_HUNYUAN3D_SECRET_ID",
-        )
-
-    def _get_hunyuan3d_secret_key(self):
-        return self._get_config_value(
-            "blendermcp_hunyuan3d_secret_key",
-            "hunyuan3d_secret_key",
-            "BLENDERMCP_HUNYUAN3D_SECRET_KEY",
-        )
-
-    def _get_hunyuan3d_api_url(self):
-        return self._get_config_value(
-            "blendermcp_hunyuan3d_api_url",
-            "hunyuan3d_api_url",
-            "BLENDERMCP_HUNYUAN3D_API_URL",
-        ) or "http://localhost:8081"
 
     def start(self):
         if bpy.app.background:
@@ -1504,14 +1386,12 @@ class BlenderMCPServer:
             "get_telemetry_consent": self.get_telemetry_consent,
             "set_telemetry_consent": self.set_telemetry_consent,
             "get_polyhaven_status": self.get_polyhaven_status,
-            "get_hyper3d_status": self.get_hyper3d_status,
             "get_sketchfab_status": self.get_sketchfab_status,
-            "get_polypizza_status": self.get_polypizza_status,
-            "get_hunyuan3d_status": self.get_hunyuan3d_status,
             "export_scene": self.export_scene,
             "save_checkpoint": save_checkpoint,
             "list_checkpoints": list_checkpoints,
             "restore_checkpoint": restore_checkpoint,
+            "download_ambientcg_material": self.download_ambientcg_material,
         }
 
         # Add Polyhaven handlers only if enabled
@@ -1525,15 +1405,6 @@ class BlenderMCPServer:
             }
             handlers.update(polyhaven_handlers)
 
-        # Add Hyper3d handlers only if enabled
-        if bpy.context.scene.blendermcp_use_hyper3d:
-            polyhaven_handlers = {
-                "create_rodin_job": self.create_rodin_job,
-                "poll_rodin_job_status": self.poll_rodin_job_status,
-                "import_generated_asset": self.import_generated_asset,
-            }
-            handlers.update(polyhaven_handlers)
-
         # Add Sketchfab handlers only if enabled
         if bpy.context.scene.blendermcp_use_sketchfab:
             sketchfab_handlers = {
@@ -1542,23 +1413,6 @@ class BlenderMCPServer:
                 "download_sketchfab_model": self.download_sketchfab_model,
             }
             handlers.update(sketchfab_handlers)
-
-        # Add Poly Pizza handlers only if enabled
-        if bpy.context.scene.blendermcp_use_polypizza:
-            polypizza_handlers = {
-                "search_polypizza_models": self.search_polypizza_models,
-                "download_polypizza_model": self.download_polypizza_model,
-            }
-            handlers.update(polypizza_handlers)
-
-        # Add Hunyuan3d handlers only if enabled
-        if bpy.context.scene.blendermcp_use_hunyuan3d:
-            hunyuan_handlers = {
-                "create_hunyuan_job": self.create_hunyuan_job,
-                "poll_hunyuan_job_status": self.poll_hunyuan_job_status,
-                "import_generated_asset_hunyuan": self.import_generated_asset_hunyuan
-            }
-            handlers.update(hunyuan_handlers)
 
         handler = handlers.get(cmd_type)
         if handler:
@@ -1599,6 +1453,7 @@ class BlenderMCPServer:
                 "save_checkpoint",
                 "list_checkpoints",
                 "restore_checkpoint",
+                "download_ambientcg_material",
             ]),
             "blender_version": bpy.app.version_string,
         }
@@ -3382,390 +3237,6 @@ class BlenderMCPServer:
             traceback.print_exc()
             return {"error": f"Failed to apply texture: {str(e)}"}
 
-    def get_telemetry_consent(self):
-        """Roxy: collection is always off. Kept so older servers get an answer."""
-        return {"consent": False}
-
-    def set_telemetry_consent(self, consent=False):
-        """Roxy: collection cannot be switched on; the request is ignored."""
-        return {"consent": False}
-
-    def get_polyhaven_status(self):
-        """Get the current status of PolyHaven integration"""
-        enabled = bpy.context.scene.blendermcp_use_polyhaven
-        if enabled:
-            return {"enabled": True, "message": "PolyHaven integration is enabled and ready to use."}
-        else:
-            return {
-                "enabled": False,
-                "message": """PolyHaven integration is currently disabled. To enable it:
-                            1. In the 3D Viewport, find the Roxy Blender MCP panel in the sidebar (press N if hidden)
-                            2. Check the 'Use assets from Poly Haven' checkbox
-                            3. Restart the connection to Claude"""
-        }
-
-    #region Hyper3D
-    def get_hyper3d_status(self):
-        """Get the current status of Hyper3D Rodin integration"""
-        enabled = bpy.context.scene.blendermcp_use_hyper3d
-        hyper3d_api_key = self._get_hyper3d_api_key()
-        if enabled:
-            if not hyper3d_api_key:
-                return {
-                    "enabled": False,
-                    "message": """Hyper3D Rodin integration is currently enabled, but API key is not given. To enable it:
-                                1. In the 3D Viewport, find the Roxy Blender MCP panel in the sidebar (press N if hidden)
-                                2. Keep the 'Use Hyper3D Rodin 3D model generation' checkbox checked
-                                3. Choose the right plaform and fill in the API Key
-                                4. Restart the connection to Claude"""
-                }
-            mode = bpy.context.scene.blendermcp_hyper3d_mode
-            message = f"Hyper3D Rodin integration is enabled and ready to use. Mode: {mode}. " + \
-                f"Key type: {'private' if hyper3d_api_key != RODIN_FREE_TRIAL_KEY else 'free_trial'}"
-            return {
-                "enabled": True,
-                "message": message
-            }
-        else:
-            return {
-                "enabled": False,
-                "message": """Hyper3D Rodin integration is currently disabled. To enable it:
-                            1. In the 3D Viewport, find the Roxy Blender MCP panel in the sidebar (press N if hidden)
-                            2. Check the 'Use Hyper3D Rodin 3D model generation' checkbox
-                            3. Restart the connection to Claude"""
-            }
-
-    def create_rodin_job(self, *args, **kwargs):
-        match bpy.context.scene.blendermcp_hyper3d_mode:
-            case "MAIN_SITE":
-                return self.create_rodin_job_main_site(*args, **kwargs)
-            case "FAL_AI":
-                return self.create_rodin_job_fal_ai(*args, **kwargs)
-            case _:
-                return f"Error: Unknown Hyper3D Rodin mode!"
-
-    def create_rodin_job_main_site(
-            self,
-            text_prompt: str=None,
-            images: list[tuple[str, str]]=None,
-            bbox_condition=None
-        ):
-        try:
-            api_key = self._get_hyper3d_api_key()
-            if not api_key:
-                return {"error": "Hyper3D API key is not given"}
-            if images is None:
-                images = []
-            """Call Rodin API, get the job uuid and subscription key"""
-            files = [
-                *[("images", (f"{i:04d}{img_suffix}", base64.b64decode(img) if isinstance(img, str) else img)) for i, (img_suffix, img) in enumerate(images)],
-                ("tier", (None, "Sketch")),
-                ("mesh_mode", (None, "Raw")),
-                ("texture_mode", (None, "high")),
-            ]
-            if text_prompt:
-                files.append(("prompt", (None, text_prompt)))
-            if bbox_condition:
-                files.append(("bbox_condition", (None, json.dumps(bbox_condition))))
-            response = requests.post(
-                "https://hyperhuman.deemos.com/api/v2/rodin",
-                headers={
-                    "Authorization": f"Bearer {api_key}",
-                },
-                files=files,
-                timeout=60,
-            )
-            data = response.json()
-            return data
-        except Exception as e:
-            return {"error": str(e)}
-
-    def create_rodin_job_fal_ai(
-            self,
-            text_prompt: str=None,
-            images: list[tuple[str, str]]=None,
-            bbox_condition=None
-        ):
-        try:
-            api_key = self._get_hyper3d_api_key()
-            if not api_key:
-                return {"error": "Hyper3D API key is not given"}
-            req_data = {
-                "tier": "Sketch",
-            }
-            if images:
-                req_data["input_image_urls"] = images
-            if text_prompt:
-                req_data["prompt"] = text_prompt
-            if bbox_condition:
-                req_data["bbox_condition"] = bbox_condition
-            response = requests.post(
-                "https://queue.fal.run/fal-ai/hyper3d/rodin",
-                headers={
-                    "Authorization": f"Key {api_key}",
-                    "Content-Type": "application/json",
-                },
-                json=req_data,
-                timeout=60,
-            )
-            data = response.json()
-            return data
-        except Exception as e:
-            return {"error": str(e)}
-
-    def poll_rodin_job_status(self, *args, **kwargs):
-        match bpy.context.scene.blendermcp_hyper3d_mode:
-            case "MAIN_SITE":
-                return self.poll_rodin_job_status_main_site(*args, **kwargs)
-            case "FAL_AI":
-                return self.poll_rodin_job_status_fal_ai(*args, **kwargs)
-            case _:
-                return f"Error: Unknown Hyper3D Rodin mode!"
-
-    def poll_rodin_job_status_main_site(self, subscription_key: str):
-        """Call the job status API to get the job status"""
-        api_key = self._get_hyper3d_api_key()
-        if not api_key:
-            return {"error": "Hyper3D API key is not given"}
-        response = requests.post(
-            "https://hyperhuman.deemos.com/api/v2/status",
-            headers={
-                "Authorization": f"Bearer {api_key}",
-            },
-            json={
-                "subscription_key": subscription_key,
-            },
-            timeout=30,
-        )
-        data = response.json()
-        return {
-            "status_list": [i["status"] for i in data["jobs"]]
-        }
-
-    def poll_rodin_job_status_fal_ai(self, request_id: str):
-        """Call the job status API to get the job status"""
-        api_key = self._get_hyper3d_api_key()
-        if not api_key:
-            return {"error": "Hyper3D API key is not given"}
-        response = requests.get(
-            f"https://queue.fal.run/fal-ai/hyper3d/requests/{request_id}/status",
-            headers={
-                "Authorization": f"KEY {api_key}",
-            },
-            timeout=30,
-        )
-        data = response.json()
-        return data
-
-    @staticmethod
-    def _clean_imported_glb(filepath, mesh_name=None):
-        # Get the set of existing objects before import
-        existing_objects = set(bpy.data.objects)
-
-        # Import the GLB file
-        bpy.ops.import_scene.gltf(filepath=filepath)
-
-        # Ensure the context is updated
-        bpy.context.view_layer.update()
-
-        # Get all imported objects
-        imported_objects = list(set(bpy.data.objects) - existing_objects)
-        # imported_objects = [obj for obj in bpy.context.view_layer.objects if obj.select_get()]
-
-        if not imported_objects:
-            print("Error: No objects were imported.")
-            return
-
-        # Identify the mesh object
-        mesh_obj = None
-
-        if len(imported_objects) == 1 and imported_objects[0].type == 'MESH':
-            mesh_obj = imported_objects[0]
-            print("Single mesh imported, no cleanup needed.")
-        else:
-            if len(imported_objects) == 2:
-                empty_objs = [i for i in imported_objects if i.type == "EMPTY"]
-                if len(empty_objs) != 1:
-                    print("Error: Expected an empty node with one mesh child or a single mesh object.")
-                    return
-                parent_obj = empty_objs.pop()
-                if len(parent_obj.children) == 1:
-                    potential_mesh = parent_obj.children[0]
-                    if potential_mesh.type == 'MESH':
-                        print("GLB structure confirmed: Empty node with one mesh child.")
-
-                        # Unparent the mesh from the empty node
-                        potential_mesh.parent = None
-
-                        # Remove the empty node
-                        bpy.data.objects.remove(parent_obj)
-                        print("Removed empty node, keeping only the mesh.")
-
-                        mesh_obj = potential_mesh
-                    else:
-                        print("Error: Child is not a mesh object.")
-                        return
-                else:
-                    print("Error: Expected an empty node with one mesh child or a single mesh object.")
-                    return
-            else:
-                print("Error: Expected an empty node with one mesh child or a single mesh object.")
-                return
-
-        # Rename the mesh if needed
-        try:
-            if mesh_obj and mesh_obj.name is not None and mesh_name:
-                mesh_obj.name = mesh_name
-                if mesh_obj.data.name is not None:
-                    mesh_obj.data.name = mesh_name
-                print(f"Mesh renamed to: {mesh_name}")
-        except Exception as e:
-            print("Having issue with renaming, give up renaming.")
-
-        return mesh_obj
-
-    def import_generated_asset(self, *args, **kwargs):
-        match bpy.context.scene.blendermcp_hyper3d_mode:
-            case "MAIN_SITE":
-                return self.import_generated_asset_main_site(*args, **kwargs)
-            case "FAL_AI":
-                return self.import_generated_asset_fal_ai(*args, **kwargs)
-            case _:
-                return f"Error: Unknown Hyper3D Rodin mode!"
-
-    def import_generated_asset_main_site(self, task_uuid: str, name: str):
-        """Fetch the generated asset, import into blender"""
-        api_key = self._get_hyper3d_api_key()
-        if not api_key:
-            return {"succeed": False, "error": "Hyper3D API key is not given"}
-        response = requests.post(
-            "https://hyperhuman.deemos.com/api/v2/download",
-            headers={
-                "Authorization": f"Bearer {api_key}",
-            },
-            json={
-                'task_uuid': task_uuid
-            },
-            timeout=30,
-        )
-        data_ = response.json()
-        temp_file = None
-        for i in data_["list"]:
-            if i["name"].endswith(".glb"):
-                temp_file = tempfile.NamedTemporaryFile(
-                    delete=False,
-                    prefix=task_uuid,
-                    suffix=".glb",
-                )
-
-                try:
-                    # Download the content
-                    response = requests.get(i["url"], stream=True, timeout=120)
-                    response.raise_for_status()  # Raise an exception for HTTP errors
-
-                    # Write the content to the temporary file
-                    for chunk in response.iter_content(chunk_size=8192):
-                        temp_file.write(chunk)
-
-                    # Close the file
-                    temp_file.close()
-
-                except Exception as e:
-                    # Clean up the file if there's an error
-                    temp_file.close()
-                    os.unlink(temp_file.name)
-                    return {"succeed": False, "error": str(e)}
-
-                break
-        else:
-            return {"succeed": False, "error": "Generation failed. Please first make sure that all jobs of the task are done and then try again later."}
-
-        try:
-            obj = self._clean_imported_glb(
-                filepath=temp_file.name,
-                mesh_name=name
-            )
-            result = {
-                "name": obj.name,
-                "type": obj.type,
-                "location": [obj.location.x, obj.location.y, obj.location.z],
-                "rotation": [obj.rotation_euler.x, obj.rotation_euler.y, obj.rotation_euler.z],
-                "scale": [obj.scale.x, obj.scale.y, obj.scale.z],
-            }
-
-            if obj.type == "MESH":
-                bounding_box = self._get_aabb(obj)
-                result["world_bounding_box"] = bounding_box
-
-            return {
-                "succeed": True, **result
-            }
-        except Exception as e:
-            return {"succeed": False, "error": str(e)}
-
-    def import_generated_asset_fal_ai(self, request_id: str, name: str):
-        """Fetch the generated asset, import into blender"""
-        api_key = self._get_hyper3d_api_key()
-        if not api_key:
-            return {"succeed": False, "error": "Hyper3D API key is not given"}
-        response = requests.get(
-            f"https://queue.fal.run/fal-ai/hyper3d/requests/{request_id}",
-            headers={
-                "Authorization": f"Key {api_key}",
-            },
-            timeout=30,
-        )
-        data_ = response.json()
-        temp_file = None
-
-        temp_file = tempfile.NamedTemporaryFile(
-            delete=False,
-            prefix=request_id,
-            suffix=".glb",
-        )
-
-        try:
-            # Download the content
-            response = requests.get(data_["model_mesh"]["url"], stream=True, timeout=120)
-            response.raise_for_status()  # Raise an exception for HTTP errors
-
-            # Write the content to the temporary file
-            for chunk in response.iter_content(chunk_size=8192):
-                temp_file.write(chunk)
-
-            # Close the file
-            temp_file.close()
-
-        except Exception as e:
-            # Clean up the file if there's an error
-            temp_file.close()
-            os.unlink(temp_file.name)
-            return {"succeed": False, "error": str(e)}
-
-        try:
-            obj = self._clean_imported_glb(
-                filepath=temp_file.name,
-                mesh_name=name
-            )
-            result = {
-                "name": obj.name,
-                "type": obj.type,
-                "location": [obj.location.x, obj.location.y, obj.location.z],
-                "rotation": [obj.rotation_euler.x, obj.rotation_euler.y, obj.rotation_euler.z],
-                "scale": [obj.scale.x, obj.scale.y, obj.scale.z],
-            }
-
-            if obj.type == "MESH":
-                bounding_box = self._get_aabb(obj)
-                result["world_bounding_box"] = bounding_box
-
-            return {
-                "succeed": True, **result
-            }
-        except Exception as e:
-            return {"succeed": False, "error": str(e)}
-    #endregion
- 
     #region Sketchfab API
     def get_sketchfab_status(self):
         """Get the current status of Sketchfab integration"""
@@ -4201,776 +3672,127 @@ class BlenderMCPServer:
             return {"error": f"Failed to download model: {str(e)}"}
     #endregion
 
-    #region Poly Pizza API
-    def get_polypizza_status(self):
-        """Get the current status of Poly Pizza integration"""
-        enabled = bpy.context.scene.blendermcp_use_polypizza
-        api_key = self._get_polypizza_api_key()
+    def download_ambientcg_material(self, asset_id, resolution="2K", file_format="JPG", apply_to=None):
+        """Download an ambientCG material, build it like a Poly Haven one, optionally apply it."""
+        asset_id = str(asset_id or "")
+        resolution = str(resolution or "2K").upper()
+        file_format = str(file_format or "JPG").upper()
+        if not AMBIENTCG_ID_RE.match(asset_id):
+            return {"error": f"Invalid ambientCG id: {asset_id!r}"}
+        if resolution not in AMBIENTCG_RESOLUTIONS or file_format not in AMBIENTCG_FORMATS:
+            return {"error": f"resolution must be one of {', '.join(AMBIENTCG_RESOLUTIONS)} and "
+                             f"file_format one of {', '.join(AMBIENTCG_FORMATS)}"}
+        try:
+            asset = _ambientcg_asset(asset_id)
+        except Exception as e:
+            return {"error": f"ambientCG did not answer: {e}"}
+        if not asset:
+            return {"error": f"No ambientCG asset called {asset_id}."}
+        wanted = f"{resolution}-{file_format}"
+        downloads = asset.get("downloads") or []
+        download = next((d for d in downloads if d.get("attributes") == wanted), None)
+        if not download:
+            available = ", ".join(d.get("attributes", "?") for d in downloads) or "none"
+            return {"error": f"{asset_id} has no {wanted} download. Available: {available}"}
+        url = str(download.get("url") or "")
+        if not url.startswith(AMBIENTCG_SITE + "/"):
+            return {"error": f"Refusing a download from outside ambientCG: {url}"}
 
-        if enabled and api_key:
-            return {
-                "enabled": True,
-                "message": "Poly Pizza integration is enabled and ready to use."
-            }
-        elif enabled and not api_key:
-            return {
-                "enabled": False,
-                "message": """Poly Pizza integration is currently enabled, but API key is not given. To enable it:
-                            1. Get a free API key at https://poly.pizza/settings/api
-                            2. In the 3D Viewport, find the Roxy Blender MCP panel in the sidebar (press N if hidden)
-                            3. Keep the 'Use Poly Pizza' checkbox checked
-                            4. Enter your Poly Pizza API Key
-                            5. Restart the connection to Claude"""
-            }
+        dest_dir = tempfile.mkdtemp(prefix="blender_mcp_ambientcg_")
+        maps, extra = {}, {}
+        try:
+            zip_path = osp.join(dest_dir, "download.zip")
+            with requests.get(url, headers=AMBIENTCG_HEADERS, stream=True, timeout=POLYHAVEN_FILE_TIMEOUT) as r:
+                r.raise_for_status()
+                with open(zip_path, "wb") as f:
+                    for chunk in r.iter_content(chunk_size=POLYHAVEN_CHUNK_SIZE):
+                        if chunk:
+                            f.write(chunk)
+            files = _ambientcg_extract_maps(zip_path, dest_dir)
+            if not files:
+                return {"error": f"The {asset_id} download held no texture maps."}
+            for map_name, path in files.items():
+                role = AMBIENTCG_MAPS[map_name]
+                image = bpy.data.images.load(path, check_existing=False)
+                image.name = f"{asset_id}_{map_name}"
+                _polyhaven_set_colorspace(image, is_color_data=role == "base_color")
+                image.pack()
+                image["ambientcg_id"] = asset_id
+                image["ambientcg_map"] = map_name
+                if role == "alpha":
+                    extra[map_name] = image
+                else:
+                    maps[map_name] = (role, image)
+        except Exception as e:
+            traceback.print_exc()
+            return {"error": f"Failed to download {asset_id}: {e}"}
+        finally:
+            # Every image is packed, so nothing needs the files any more.
+            shutil.rmtree(dest_dir, ignore_errors=True)
+
+        try:
+            mat, wired = self._polyhaven_build_material(asset_id, maps)
+            mat["ambientcg_id"] = asset_id
+            if "Opacity" in extra:
+                nodes, links = mat.node_tree.nodes, mat.node_tree.links
+                bsdf = next(n for n in nodes if n.type == "BSDF_PRINCIPLED")
+                mapping = next((n for n in nodes if n.type == "MAPPING"), None)
+                tex = nodes.new(type="ShaderNodeTexImage")
+                tex.image = extra["Opacity"]
+                tex.location = (-500, -1500)
+                if mapping:
+                    links.new(mapping.outputs["Vector"], tex.inputs["Vector"])
+                links.new(tex.outputs["Color"], bsdf.inputs["Alpha"])
+                if hasattr(mat, "surface_render_method"):
+                    mat.surface_render_method = "DITHERED"
+                wired.append("Opacity")
+        except Exception as e:
+            traceback.print_exc()
+            return {"error": f"Failed to build material: {e}"}
+
+        applied, missing = [], []
+        for name in apply_to or []:
+            obj = bpy.data.objects.get(name)
+            if not obj or not hasattr(obj.data, "materials"):
+                missing.append(name)
+                continue
+            obj.data.materials.clear()
+            obj.data.materials.append(mat)
+            applied.append(name)
+
+        return {
+            "success": True,
+            "material": mat.name,
+            "maps": wired,
+            "resolution": wanted,
+            "size_m": _ambientcg_size_m(asset),
+            "applied": applied,
+            "not_found": missing,
+            "url": f"{AMBIENTCG_SITE}/view?id={asset_id}",
+        }
+
+    def get_telemetry_consent(self):
+        """Roxy: collection is always off. Kept so older servers get an answer."""
+        return {"consent": False}
+
+    def set_telemetry_consent(self, consent=False):
+        """Roxy: collection cannot be switched on; the request is ignored."""
+        return {"consent": False}
+
+    def get_polyhaven_status(self):
+        """Get the current status of PolyHaven integration"""
+        enabled = bpy.context.scene.blendermcp_use_polyhaven
+        if enabled:
+            return {"enabled": True, "message": "PolyHaven integration is enabled and ready to use."}
         else:
             return {
                 "enabled": False,
-                "message": """Poly Pizza integration is currently disabled. To enable it:
-                            1. Get a free API key at https://poly.pizza/settings/api
-                            2. In the 3D Viewport, find the Roxy Blender MCP panel in the sidebar (press N if hidden)
-                            3. Check the 'Use assets from Poly Pizza' checkbox
-                            4. Enter your Poly Pizza API Key
-                            5. Restart the connection to Claude"""
-            }
-
-    def search_polypizza_models(self, query=None, category=None, licence=None,
-                                animated=False, limit=20, page=None):
-        """Search for models on Poly Pizza by keyword and/or filters
-
-        Parameters:
-        - query: Keyword to search for. When omitted, at least one filter is
-                 required: the bare /search endpoint answers 400 without one.
-        - category: Numeric category id (0-11); the MCP server resolves names
-        - licence: Numeric licence id (0 = CC-BY, 1 = CC0); the MCP server resolves names
-        - animated: When True, return only animated models
-        - limit: Maximum number of results to return (the API caps a page at 32)
-        - page: Optional 0-based page number
-        """
-        try:
-            api_key = self._get_polypizza_api_key()
-            if not api_key:
-                return {"error": "Poly Pizza API key is not configured"}
-
-            try:
-                filters = _polypizza_filter_params(category, licence, animated)
-            except ValueError as e:
-                return {"error": str(e)}
-
-            keyword = (query or "").strip()
-            if not keyword and not filters:
-                return {"error": (
-                    "Poly Pizza needs a search keyword or at least one filter "
-                    "(category, licence, or animated=True). An unfiltered listing of the "
-                    "whole catalogue is rejected by the API with HTTP 400."
-                )}
-
-            # Limit and Page are Capitalized like the filters: lowercase
-            # variants are silently ignored and the API then serves its
-            # default page of 32.
-            params = dict(filters)
-            params["Limit"] = max(1, min(int(limit), 32))
-            if page is not None:
-                params["Page"] = page
-
-            headers = dict(REQ_HEADERS)
-            headers["x-auth-token"] = api_key
-
-            if keyword:
-                url = f"{POLYPIZZA_API_BASE}/search/{quote(keyword, safe='')}"
-            else:
-                url = f"{POLYPIZZA_API_BASE}/search"
-
-            response = requests.get(url, headers=headers, params=params, timeout=30)
-
-            if response.status_code in (401, 403):
-                return {"error": f"Poly Pizza authentication failed ({response.status_code}). Check your API key."}
-
-            if response.status_code == 400:
-                return {"error": (
-                    "Poly Pizza rejected the search parameters (400). Category must be an id in "
-                    "0-11 and licence 0 (CC-BY) or 1 (CC0)."
-                )}
-
-            if response.status_code == 429:
-                return {"error": "Poly Pizza rate limit exceeded (100 requests/second). Try again in a moment."}
-
-            if response.status_code != 200:
-                return {"error": f"Poly Pizza API request failed with status code {response.status_code}"}
-
-            response_data = response.json()
-
-            if response_data is None:
-                return {"error": "Received empty response from Poly Pizza API"}
-
-            results = response_data.get("results", [])
-            if not isinstance(results, list):
-                return {"error": f"Unexpected response format from Poly Pizza API: {response_data}"}
-
-            return {
-                "total": response_data.get("total", len(results)),
-                "results": [_polypizza_summarize_model(m) for m in results if isinstance(m, dict)],
-                "filters_applied": filters,
-            }
-
-        except requests.exceptions.Timeout:
-            return {"error": "Request timed out. Check your internet connection."}
-        except json.JSONDecodeError as e:
-            return {"error": f"Invalid JSON response from Poly Pizza API: {str(e)}"}
-        except Exception as e:
-            import traceback
-            traceback.print_exc()
-            return {"error": str(e)}
-
-    def download_polypizza_model(self, model_id, normalize_size=False, target_size=1.0):
-        """Download a model from Poly Pizza by its ID
-
-        Parameters:
-        - model_id: The Poly Pizza model ID (from search_polypizza_models)
-        - normalize_size: If True, scale the model so its largest dimension equals target_size
-        - target_size: The target size in Blender units (meters) for the largest dimension
-        """
-        temp_dir = None
-        try:
-            api_key = self._get_polypizza_api_key()
-            if not api_key:
-                return {"error": "Poly Pizza API key is not configured"}
-
-            headers = dict(REQ_HEADERS)
-            headers["x-auth-token"] = api_key
-
-            response = requests.get(
-                f"{POLYPIZZA_API_BASE}/model/{quote(str(model_id), safe='')}",
-                headers=headers,
-                timeout=30
-            )
-
-            if response.status_code in (401, 403):
-                return {"error": f"Poly Pizza authentication failed ({response.status_code}). Check your API key."}
-
-            if response.status_code == 404:
-                return {"error": f"No Poly Pizza model found with ID '{model_id}'"}
-
-            if response.status_code != 200:
-                return {"error": f"Poly Pizza model lookup failed with status code {response.status_code}"}
-
-            model = response.json()
-
-            if not isinstance(model, dict):
-                return {"error": f"Unexpected response format from Poly Pizza API: {model}"}
-
-            download_url = model.get("Download")
-            if not download_url:
-                return {"error": f"Poly Pizza model '{model_id}' has no downloadable GLB file"}
-
-            # The CDN takes no API key and must never be sent one: it is a
-            # separate host from the API.
-            file_response = requests.get(download_url, headers=dict(REQ_HEADERS), timeout=60)
-
-            cdn_error = _polypizza_cdn_error(
-                file_response.status_code,
-                getattr(file_response, "headers", None),
-                file_response.content or b"",
-            )
-            if cdn_error:
-                return {"error": cdn_error}
-
-            # Every Poly Pizza model is a single self-contained .glb - no zip,
-            # no sidecar textures - so it goes straight to disk and into glTF import.
-            safe_id = re.sub(r"[^A-Za-z0-9_-]", "_", str(model_id)) or "model"
-            temp_dir = tempfile.mkdtemp()
-            glb_path = os.path.join(temp_dir, f"{safe_id}.glb")
-
-            with open(glb_path, "wb") as f:
-                f.write(file_response.content)
-
-            bpy.ops.import_scene.gltf(filepath=glb_path)
-
-            # Get the imported objects
-            imported_objects = list(bpy.context.selected_objects)
-            imported_object_names = [obj.name for obj in imported_objects]
-
-            # Clean up temporary files
-            with suppress(Exception):
-                shutil.rmtree(temp_dir)
-            temp_dir = None
-
-            # Find root objects (objects without parents in the imported set)
-            root_objects = [obj for obj in imported_objects if obj.parent is None]
-
-            # 69% of the catalogue is CC-BY, so the credit line has to outlive
-            # the session. Custom properties are saved into the .blend.
-            attribution = model.get("Attribution") or ""
-            licence = model.get("Licence") or ""
-            for root in root_objects:
-                root["polypizza_attribution"] = attribution
-                root["polypizza_id"] = model.get("ID") or str(model_id)
-                root["polypizza_licence"] = licence
-
-            # Helper function to recursively get all mesh children
-            def get_all_mesh_children(obj):
-                """Recursively collect all mesh objects in the hierarchy"""
-                meshes = []
-                if obj.type == 'MESH':
-                    meshes.append(obj)
-                for child in obj.children:
-                    meshes.extend(get_all_mesh_children(child))
-                return meshes
-
-            # Collect ALL meshes from the entire hierarchy (starting from roots)
-            all_meshes = []
-            for obj in root_objects:
-                all_meshes.extend(get_all_mesh_children(obj))
-
-            if all_meshes:
-                # Calculate combined world bounding box for all meshes
-                all_min = mathutils.Vector((float('inf'), float('inf'), float('inf')))
-                all_max = mathutils.Vector((float('-inf'), float('-inf'), float('-inf')))
-
-                for mesh_obj in all_meshes:
-                    # Get world-space bounding box corners
-                    for corner in mesh_obj.bound_box:
-                        world_corner = mesh_obj.matrix_world @ mathutils.Vector(corner)
-                        all_min.x = min(all_min.x, world_corner.x)
-                        all_min.y = min(all_min.y, world_corner.y)
-                        all_min.z = min(all_min.z, world_corner.z)
-                        all_max.x = max(all_max.x, world_corner.x)
-                        all_max.y = max(all_max.y, world_corner.y)
-                        all_max.z = max(all_max.z, world_corner.z)
-
-                # Calculate dimensions
-                dimensions = [
-                    all_max.x - all_min.x,
-                    all_max.y - all_min.y,
-                    all_max.z - all_min.z
-                ]
-                max_dimension = max(dimensions)
-
-                # Apply normalization if requested
-                scale_applied = 1.0
-                if normalize_size and max_dimension > 0:
-                    scale_factor = target_size / max_dimension
-                    scale_applied = scale_factor
-
-                    # Only apply scale to ROOT objects (not children!)
-                    # Child objects inherit parent's scale through matrix_world
-                    for root in root_objects:
-                        root.scale = (
-                            root.scale.x * scale_factor,
-                            root.scale.y * scale_factor,
-                            root.scale.z * scale_factor
-                        )
-
-                    # Update the scene to recalculate matrix_world for all objects
-                    bpy.context.view_layer.update()
-
-                    # Recalculate bounding box after scaling
-                    all_min = mathutils.Vector((float('inf'), float('inf'), float('inf')))
-                    all_max = mathutils.Vector((float('-inf'), float('-inf'), float('-inf')))
-
-                    for mesh_obj in all_meshes:
-                        for corner in mesh_obj.bound_box:
-                            world_corner = mesh_obj.matrix_world @ mathutils.Vector(corner)
-                            all_min.x = min(all_min.x, world_corner.x)
-                            all_min.y = min(all_min.y, world_corner.y)
-                            all_min.z = min(all_min.z, world_corner.z)
-                            all_max.x = max(all_max.x, world_corner.x)
-                            all_max.y = max(all_max.y, world_corner.y)
-                            all_max.z = max(all_max.z, world_corner.z)
-
-                    dimensions = [
-                        all_max.x - all_min.x,
-                        all_max.y - all_min.y,
-                        all_max.z - all_min.z
-                    ]
-
-                world_bounding_box = [[all_min.x, all_min.y, all_min.z], [all_max.x, all_max.y, all_max.z]]
-            else:
-                world_bounding_box = None
-                dimensions = None
-                scale_applied = 1.0
-
-            result = {
-                "success": True,
-                "message": "Model imported successfully",
-                "imported_objects": imported_object_names,
-                "model_id": model.get("ID") or str(model_id),
-                "title": model.get("Title"),
-                "licence": licence,
-                "attribution": attribution,
-                "tri_count": model.get("Tri Count"),
-            }
-
-            if world_bounding_box:
-                result["world_bounding_box"] = world_bounding_box
-            if dimensions:
-                result["dimensions"] = [round(d, 4) for d in dimensions]
-            if normalize_size:
-                result["scale_applied"] = round(scale_applied, 6)
-                result["normalized"] = True
-
-            return result
-
-        except requests.exceptions.Timeout:
-            return {"error": "Request timed out. Check your internet connection and try again."}
-        except json.JSONDecodeError as e:
-            return {"error": f"Invalid JSON response from Poly Pizza API: {str(e)}"}
-        except Exception as e:
-            import traceback
-            traceback.print_exc()
-            return {"error": f"Failed to download model: {str(e)}"}
-        finally:
-            if temp_dir:
-                with suppress(Exception):
-                    shutil.rmtree(temp_dir)
-    #endregion
-
-    #region Hunyuan3D
-    def get_hunyuan3d_status(self):
-        """Get the current status of Hunyuan3D integration"""
-        enabled = bpy.context.scene.blendermcp_use_hunyuan3d
-        hunyuan3d_mode = bpy.context.scene.blendermcp_hunyuan3d_mode
-        secret_id = self._get_hunyuan3d_secret_id()
-        secret_key = self._get_hunyuan3d_secret_key()
-        api_url = self._get_hunyuan3d_api_url()
-        if enabled:
-            match hunyuan3d_mode:
-                case "OFFICIAL_API":
-                    if not secret_id or not secret_key:
-                        return {
-                            "enabled": False, 
-                            "mode": hunyuan3d_mode, 
-                            "message": """Hunyuan3D integration is currently enabled, but SecretId or SecretKey is not given. To enable it:
-                                1. In the 3D Viewport, find the Roxy Blender MCP panel in the sidebar (press N if hidden)
-                                2. Keep the 'Use Tencent Hunyuan 3D model generation' checkbox checked
-                                3. Choose the right platform and fill in the SecretId and SecretKey
-                                4. Restart the connection to Claude"""
-                        }
-                case "LOCAL_API":
-                    if not api_url:
-                        return {
-                            "enabled": False, 
-                            "mode": hunyuan3d_mode, 
-                            "message": """Hunyuan3D integration is currently enabled, but API URL  is not given. To enable it:
-                                1. In the 3D Viewport, find the Roxy Blender MCP panel in the sidebar (press N if hidden)
-                                2. Keep the 'Use Tencent Hunyuan 3D model generation' checkbox checked
-                                3. Choose the right platform and fill in the API URL
-                                4. Restart the connection to Claude"""
-                        }
-                case _:
-                    return {
-                        "enabled": False, 
-                        "message": "Hunyuan3D integration is enabled and mode is not supported."
-                    }
-            return {
-                "enabled": True, 
-                "mode": hunyuan3d_mode,
-                "message": "Hunyuan3D integration is enabled and ready to use."
-            }
-        return {
-            "enabled": False, 
-            "message": """Hunyuan3D integration is currently disabled. To enable it:
-                        1. In the 3D Viewport, find the Roxy Blender MCP panel in the sidebar (press N if hidden)
-                        2. Check the 'Use Tencent Hunyuan 3D model generation' checkbox
-                        3. Restart the connection to Claude"""
-        }
-    
-    @staticmethod
-    def get_tencent_cloud_sign_headers(
-        method: str,
-        path: str,
-        headParams: dict,
-        data: dict,
-        service: str,
-        region: str,
-        secret_id: str,
-        secret_key: str,
-        host: str = None
-    ):
-        """Generate the signature header required for Tencent Cloud API requests headers"""
-        # Generate timestamp
-        timestamp = int(time.time())
-        date = datetime.utcfromtimestamp(timestamp).strftime("%Y-%m-%d")
-        
-        # If host is not provided, it is generated based on service and region.
-        if not host:
-            host = f"{service}.tencentcloudapi.com"
-        
-        endpoint = f"https://{host}"
-        
-        # Constructing the request body
-        payload_str = json.dumps(data)
-        
-        # ************* Step 1: Concatenate the canonical request string *************
-        canonical_uri = path
-        canonical_querystring = ""
-        ct = "application/json; charset=utf-8"
-        canonical_headers = f"content-type:{ct}\nhost:{host}\nx-tc-action:{headParams.get('Action', '').lower()}\n"
-        signed_headers = "content-type;host;x-tc-action"
-        hashed_request_payload = hashlib.sha256(payload_str.encode("utf-8")).hexdigest()
-        
-        canonical_request = (method + "\n" +
-                            canonical_uri + "\n" +
-                            canonical_querystring + "\n" +
-                            canonical_headers + "\n" +
-                            signed_headers + "\n" +
-                            hashed_request_payload)
-
-        # ************* Step 2: Construct the reception signature string *************
-        credential_scope = f"{date}/{service}/tc3_request"
-        hashed_canonical_request = hashlib.sha256(canonical_request.encode("utf-8")).hexdigest()
-        string_to_sign = ("TC3-HMAC-SHA256" + "\n" +
-                        str(timestamp) + "\n" +
-                        credential_scope + "\n" +
-                        hashed_canonical_request)
-
-        # ************* Step 3: Calculate the signature *************
-        def sign(key, msg):
-            return hmac.new(key, msg.encode("utf-8"), hashlib.sha256).digest()
-
-        secret_date = sign(("TC3" + secret_key).encode("utf-8"), date)
-        secret_service = sign(secret_date, service)
-        secret_signing = sign(secret_service, "tc3_request")
-        signature = hmac.new(
-            secret_signing, 
-            string_to_sign.encode("utf-8"), 
-            hashlib.sha256
-        ).hexdigest()
-
-        # ************* Step 4: Connect Authorization *************
-        authorization = ("TC3-HMAC-SHA256" + " " +
-                        "Credential=" + secret_id + "/" + credential_scope + ", " +
-                        "SignedHeaders=" + signed_headers + ", " +
-                        "Signature=" + signature)
-
-        # Constructing request headers
-        headers = {
-            "Authorization": authorization,
-            "Content-Type": "application/json; charset=utf-8",
-            "Host": host,
-            "X-TC-Action": headParams.get("Action", ""),
-            "X-TC-Timestamp": str(timestamp),
-            "X-TC-Version": headParams.get("Version", ""),
-            "X-TC-Region": region
+                "message": """PolyHaven integration is currently disabled. To enable it:
+                            1. In the 3D Viewport, find the Roxy Blender MCP panel in the sidebar (press N if hidden)
+                            2. Check the 'Use assets from Poly Haven' checkbox
+                            3. Restart the connection to Claude"""
         }
 
-        return headers, endpoint
-
-    def create_hunyuan_job(self, *args, **kwargs):
-        match bpy.context.scene.blendermcp_hunyuan3d_mode:
-            case "OFFICIAL_API":
-                return self.create_hunyuan_job_main_site(*args, **kwargs)
-            case "LOCAL_API":
-                return self.create_hunyuan_job_local_site(*args, **kwargs)
-            case _:
-                return f"Error: Unknown Hunyuan3D mode!"
-
-    def create_hunyuan_job_main_site(
-        self,
-        text_prompt: str = None,
-        image: str = None
-    ):
-        try:
-            secret_id = self._get_hunyuan3d_secret_id()
-            secret_key = self._get_hunyuan3d_secret_key()
-
-            if not secret_id or not secret_key:
-                return {"error": "SecretId or SecretKey is not given"}
-
-            # Parameter verification
-            if not text_prompt and not image:
-                return {"error": "Prompt or Image is required"}
-            if text_prompt and image:
-                return {"error": "Prompt and Image cannot be provided simultaneously"}
-            profile = hunyuan_api_profile(
-                getattr(bpy.context.scene, "blendermcp_hunyuan3d_intl_pro", False))
-            service = profile["service"]
-            action = profile["submit_action"]
-            version = profile["version"]
-            region = profile["region"]
-
-            headParams={
-                "Action": action,
-                "Version": version,
-                "Region": region,
-            }
-
-            # Constructing request parameters
-            data = profile["submit_body"]
-
-            # Handling text prompts
-            if text_prompt:
-                if len(text_prompt) > 1024:
-                    return {"error": "Prompt exceeds 1024 characters limit"}
-                data["Prompt"] = text_prompt
-
-            # Handling image
-            if image:
-                if re.match(r'^https?://', image, re.IGNORECASE) is not None:
-                    data["ImageUrl"] = image
-                else:
-                    try:
-                        # Convert to Base64 format
-                        with open(image, "rb") as f:
-                            image_base64 = base64.b64encode(f.read()).decode("ascii")
-                        data["ImageBase64"] = image_base64
-                    except Exception as e:
-                        return {"error": f"Image encoding failed: {str(e)}"}
-            
-            # Get signed headers
-            headers, endpoint = self.get_tencent_cloud_sign_headers("POST", "/", headParams, data, service, region, secret_id, secret_key)
-
-            response = requests.post(
-                endpoint,
-                headers = headers,
-                data = json.dumps(data),
-                timeout=30,
-            )
-
-            if response.status_code == 200:
-                return response.json()
-            return {
-                "error": f"API request failed with status {response.status_code}: {response}"
-            }
-        except Exception as e:
-            return {"error": str(e)}
-
-    def create_hunyuan_job_local_site(
-        self,
-        text_prompt: str = None,
-        image: str = None):
-        try:
-            base_url = self._get_hunyuan3d_api_url().rstrip('/')
-            octree_resolution = bpy.context.scene.blendermcp_hunyuan3d_octree_resolution
-            num_inference_steps = bpy.context.scene.blendermcp_hunyuan3d_num_inference_steps
-            guidance_scale = bpy.context.scene.blendermcp_hunyuan3d_guidance_scale
-            texture = bpy.context.scene.blendermcp_hunyuan3d_texture
-
-            if not base_url:
-                return {"error": "API URL is not given"}
-            # Parameter verification
-            if not text_prompt and not image:
-                return {"error": "Prompt or Image is required"}
-
-            # Constructing request parameters
-            data = {
-                "octree_resolution": octree_resolution,
-                "num_inference_steps": num_inference_steps,
-                "guidance_scale": guidance_scale,
-                "texture": texture,
-            }
-
-            # Handling text prompts
-            if text_prompt:
-                data["text"] = text_prompt
-
-            # Handling image
-            if image:
-                if re.match(r'^https?://', image, re.IGNORECASE) is not None:
-                    try:
-                        resImg = requests.get(image, timeout=30)
-                        resImg.raise_for_status()
-                        image_base64 = base64.b64encode(resImg.content).decode("ascii")
-                        data["image"] = image_base64
-                    except Exception as e:
-                        return {"error": f"Failed to download or encode image: {str(e)}"} 
-                else:
-                    try:
-                        # Convert to Base64 format
-                        with open(image, "rb") as f:
-                            image_base64 = base64.b64encode(f.read()).decode("ascii")
-                        data["image"] = image_base64
-                    except Exception as e:
-                        return {"error": f"Image encoding failed: {str(e)}"}
-
-            # The local server generates synchronously, so allow it minutes to reply.
-            response = requests.post(
-                f"{base_url}/generate",
-                json = data,
-                timeout=(10, 600),
-            )
-
-            if response.status_code != 200:
-                return {
-                    "error": f"Generation failed: {response.text}"
-                }
-        
-            # Decode base64 and save to temporary file
-            with tempfile.NamedTemporaryFile(delete=False, suffix=".glb") as temp_file:
-                temp_file.write(response.content)
-                temp_file_name = temp_file.name
-
-            # Import the GLB file in the main thread
-            def import_handler():
-                bpy.ops.import_scene.gltf(filepath=temp_file_name)
-                os.unlink(temp_file.name)
-                return None
-            
-            bpy.app.timers.register(import_handler)
-
-            return {
-                "status": "DONE",
-                "message": "Generation and Import glb succeeded"
-            }
-        except Exception as e:
-            print(f"An error occurred: {e}")
-            return {"error": str(e)}
-        
-    
-    def poll_hunyuan_job_status(self, *args, **kwargs):
-        return self.poll_hunyuan_job_status_ai(*args, **kwargs)
-    
-    def poll_hunyuan_job_status_ai(self, job_id: str):
-        """Call the job status API to get the job status"""
-        print(job_id)
-        try:
-            secret_id = self._get_hunyuan3d_secret_id()
-            secret_key = self._get_hunyuan3d_secret_key()
-
-            if not secret_id or not secret_key:
-                return {"error": "SecretId or SecretKey is not given"}
-            if not job_id:
-                return {"error": "JobId is required"}
-            
-            profile = hunyuan_api_profile(
-                getattr(bpy.context.scene, "blendermcp_hunyuan3d_intl_pro", False))
-            service = profile["service"]
-            action = profile["query_action"]
-            version = profile["version"]
-            region = profile["region"]
-
-            headParams={
-                "Action": action,
-                "Version": version,
-                "Region": region,
-            }
-
-            clean_job_id = job_id.removeprefix("job_")
-            data = {
-                "JobId": clean_job_id
-            }
-
-            headers, endpoint = self.get_tencent_cloud_sign_headers("POST", "/", headParams, data, service, region, secret_id, secret_key)
-
-            response = requests.post(
-                endpoint,
-                headers=headers,
-                data=json.dumps(data),
-                timeout=30,
-            )
-
-            if response.status_code == 200:
-                return response.json()
-            return {
-                "error": f"API request failed with status {response.status_code}: {response}"
-            }
-        except Exception as e:
-            return {"error": str(e)}
-
-    def import_generated_asset_hunyuan(self, *args, **kwargs):
-        return self.import_generated_asset_hunyuan_ai(*args, **kwargs)
-            
-    def _import_hunyuan_glb(self, name: str, glb_url: str):
-        temp_dir = tempfile.mkdtemp(prefix="hunyuan_glb_")
-        glb_path = osp.join(temp_dir, "model.glb")
-        try:
-            glb_response = requests.get(glb_url, stream=True, timeout=120)
-            glb_response.raise_for_status()
-            with open(glb_path, "wb") as f:
-                for chunk in glb_response.iter_content(chunk_size=8192):
-                    f.write(chunk)
-            bpy.ops.import_scene.gltf(filepath=glb_path)
-            imported_objs = [obj for obj in bpy.context.selected_objects if obj.type == 'MESH']
-            if not imported_objs:
-                return {"succeed": False, "error": "No mesh objects imported from GLB"}
-            obj = imported_objs[0]
-            if name:
-                obj.name = name
-            result = {
-                "name": obj.name, "type": obj.type,
-                "location": [obj.location.x, obj.location.y, obj.location.z],
-                "rotation": [obj.rotation_euler.x, obj.rotation_euler.y, obj.rotation_euler.z],
-                "scale": [obj.scale.x, obj.scale.y, obj.scale.z],
-            }
-            if obj.type == "MESH":
-                result["world_bounding_box"] = self._get_aabb(obj)
-            return {"succeed": True, **result}
-        except Exception as e:
-            return {"succeed": False, "error": str(e)}
-        finally:
-            with suppress(Exception):
-                shutil.rmtree(temp_dir)
-
-    def import_generated_asset_hunyuan_ai(self, name: str, zip_file_url: str):
-        if not zip_file_url:
-            return {"error": "No file URL provided"}
-        
-        # Validate URL
-        if not re.match(r'^https?://', zip_file_url, re.IGNORECASE):
-            return {"error": "Invalid URL format. Must start with http:// or https://"}
-
-        # Prefer GLB (self-contained with materials) over OBJ/ZIP (API 3.0 returns .glb URLs)
-        url_path = zip_file_url.split('?', 1)[0].split('#', 1)[0].lower()
-        if url_path.endswith('.glb'):
-            return self._import_hunyuan_glb(name, zip_file_url)
-
-        # Fallback: ZIP/OBJ import (legacy)
-        temp_dir = tempfile.mkdtemp(prefix="tencent_obj_")
-        zip_file_path = osp.join(temp_dir, "model.zip")
-        obj_file_path = osp.join(temp_dir, "model.obj")
-        try:
-            zip_response = requests.get(zip_file_url, stream=True, timeout=120)
-            zip_response.raise_for_status()
-            with open(zip_file_path, "wb") as f:
-                for chunk in zip_response.iter_content(chunk_size=8192):
-                    f.write(chunk)
-            with zipfile.ZipFile(zip_file_path, "r") as zip_ref:
-                # Mirror the Sketchfab zip-slip checks before extractall.
-                abs_temp_dir = os.path.abspath(temp_dir)
-                for file_info in zip_ref.infolist():
-                    file_path = file_info.filename
-                    target_path = os.path.join(temp_dir, os.path.normpath(file_path))
-                    abs_target_path = os.path.abspath(target_path)
-                    if not abs_target_path.startswith(abs_temp_dir + os.sep) and abs_target_path != abs_temp_dir:
-                        return {
-                            "succeed": False,
-                            "error": "Security issue: Zip contains files with path traversal attempt",
-                        }
-                    if ".." in file_path:
-                        return {
-                            "succeed": False,
-                            "error": "Security issue: Zip contains files with directory traversal sequence",
-                        }
-                zip_ref.extractall(temp_dir)
-            for file in os.listdir(temp_dir):
-                if file.endswith(".obj"):
-                    obj_file_path = osp.join(temp_dir, file)
-            if not osp.exists(obj_file_path):
-                return {"succeed": False, "error": "OBJ file not found after extraction"}
-            if bpy.app.version>=(4, 0, 0):
-                bpy.ops.wm.obj_import(filepath=obj_file_path)
-            else:
-                bpy.ops.import_scene.obj(filepath=obj_file_path)
-            imported_objs = [obj for obj in bpy.context.selected_objects if obj.type == 'MESH']
-            if not imported_objs:
-                return {"succeed": False, "error": "No mesh objects imported"}
-            obj = imported_objs[0]
-            if name:
-                obj.name = name
-            result = {
-                "name": obj.name, "type": obj.type,
-                "location": [obj.location.x, obj.location.y, obj.location.z],
-                "rotation": [obj.rotation_euler.x, obj.rotation_euler.y, obj.rotation_euler.z],
-                "scale": [obj.scale.x, obj.scale.y, obj.scale.z],
-            }
-            if obj.type == "MESH":
-                result["world_bounding_box"] = self._get_aabb(obj)
-            return {"succeed": True, **result}
-        except Exception as e:
-            return {"succeed": False, "error": str(e)}
-        finally:
-            with suppress(Exception):
-                shutil.rmtree(temp_dir)
-    #endregion
 
 
 #region Checkpoints
@@ -5134,38 +3956,10 @@ def restore_checkpoint(checkpoint_id=""):
 class BLENDERMCP_AddonPreferences(bpy.types.AddonPreferences):
     bl_idname = __name__
     
-    hyper3d_api_key: bpy.props.StringProperty(
-        name="Hyper3D API Key",
-        subtype="PASSWORD",
-        description="Persistent Hyper3D API Key",
-        default=""
-    )
     sketchfab_api_key: bpy.props.StringProperty(
         name="Sketchfab API Key",
         subtype="PASSWORD",
         description="Persistent Sketchfab API Key",
-        default=""
-    )
-    polypizza_api_key: bpy.props.StringProperty(
-        name="Poly Pizza API Key",
-        subtype="PASSWORD",
-        description="Persistent Poly Pizza API Key",
-        default=""
-    )
-    hunyuan3d_secret_id: bpy.props.StringProperty(
-        name="Hunyuan3D SecretId",
-        description="Persistent Hunyuan3D SecretId",
-        default=""
-    )
-    hunyuan3d_secret_key: bpy.props.StringProperty(
-        name="Hunyuan3D SecretKey",
-        subtype="PASSWORD",
-        description="Persistent Hunyuan3D SecretKey",
-        default=""
-    )
-    hunyuan3d_api_url: bpy.props.StringProperty(
-        name="Hunyuan3D API URL",
-        description="Persistent Hunyuan3D API URL",
         default=""
     )
 
@@ -5178,25 +3972,9 @@ class BLENDERMCP_AddonPreferences(bpy.types.AddonPreferences):
         box.label(text="Off: no usage data, prompts, code or screenshots are sent.", icon='CHECKMARK')
 
         layout.separator()
-        layout.label(text="3D Generation:", icon='SHADERFX')
-        gen_box = layout.box()
-        col = gen_box.column()
-        col.prop(self, "hyper3d_api_key", text="Hyper3D API Key")
-        row = col.row(align=True)
-        row.operator("wm.url_open", text="hyper3d.ai keys", icon='URL').url = "https://hyper3d.ai/"
-        row.operator("wm.url_open", text="fal.ai keys", icon='URL').url = "https://fal.ai/dashboard/keys"
-        col.separator()
-        col.prop(self, "hunyuan3d_secret_id", text="Hunyuan3D SecretId")
-        col.prop(self, "hunyuan3d_secret_key", text="Hunyuan3D SecretKey")
-        col.operator("wm.url_open", text="Tencent Cloud keys", icon='URL').url = \
-            "https://console.cloud.tencent.com/cam/capi"
-        col.prop(self, "hunyuan3d_api_url", text="Hunyuan3D API URL")
-
-        layout.separator()
         layout.label(text="Persistent API Credentials:", icon='LOCKED')
         cred_box = layout.box()
         cred_box.prop(self, "sketchfab_api_key", text="Sketchfab API Key")
-        cred_box.prop(self, "polypizza_api_key", text="Poly Pizza API Key")
 
 # Blender UI Panel
 class BLENDERMCP_PT_Panel(bpy.types.Panel):
@@ -5252,74 +4030,6 @@ class BLENDERMCP_PT_Panel(bpy.types.Panel):
                 col.prop(prefs, "sketchfab_api_key", text="API Key")
             else:
                 col.prop(scene, "blendermcp_sketchfab_api_key", text="API Key")
-
-        sub = self._integration_header(
-            layout, scene, "blendermcp_use_polypizza", "Poly Pizza", 'MESH_ICOSPHERE')
-        if sub:
-            col = sub.column(align=True)
-            if prefs:
-                col.prop(prefs, "polypizza_api_key", text="API Key")
-            else:
-                col.prop(scene, "blendermcp_polypizza_api_key", text="API Key")
-
-        # AI model generation
-        layout.separator()
-        layout.label(text="AI Model Generation", icon='SHADERFX')
-        sub = self._integration_header(
-            layout, scene, "blendermcp_use_hyper3d", "Hyper3D Rodin", 'MESH_UVSPHERE')
-        if sub:
-            col = sub.column(align=True)
-            col.prop(scene, "blendermcp_hyper3d_mode", text="Mode")
-            if prefs:
-                col.prop(prefs, "hyper3d_api_key", text="API Key")
-            else:
-                col.prop(scene, "blendermcp_hyper3d_api_key", text="API Key")
-            sub.operator("blendermcp.set_hyper3d_free_trial_api_key",
-                         text="Set Free Trial API Key", icon='KEYINGSET')
-
-        sub = self._integration_header(
-            layout, scene, "blendermcp_use_hunyuan3d", "Tencent Hunyuan 3D", 'MESH_CUBE')
-        if sub:
-            col = sub.column(align=True)
-            col.prop(scene, "blendermcp_hunyuan3d_mode", text="Mode")
-            if scene.blendermcp_hunyuan3d_mode == 'OFFICIAL_API':
-                if prefs:
-                    col.prop(prefs, "hunyuan3d_secret_id", text="SecretId")
-                    col.prop(prefs, "hunyuan3d_secret_key", text="SecretKey")
-                else:
-                    col.prop(scene, "blendermcp_hunyuan3d_secret_id", text="SecretId")
-                    col.prop(scene, "blendermcp_hunyuan3d_secret_key", text="SecretKey")
-                col.prop(scene, "blendermcp_hunyuan3d_intl_pro", text="International (Pro) account")
-            if scene.blendermcp_hunyuan3d_mode == 'LOCAL_API':
-                if prefs:
-                    col.prop(prefs, "hunyuan3d_api_url", text="API URL")
-                else:
-                    col.prop(scene, "blendermcp_hunyuan3d_api_url", text="API URL")
-                col.separator()
-                col.prop(scene, "blendermcp_hunyuan3d_octree_resolution", text="Octree Resolution")
-                col.prop(scene, "blendermcp_hunyuan3d_num_inference_steps", text="Inference Steps")
-                col.prop(scene, "blendermcp_hunyuan3d_guidance_scale", text="Guidance Scale")
-                col.prop(scene, "blendermcp_hunyuan3d_texture", text="Generate Texture")
-
-# Operator to set Hyper3D API Key
-class BLENDERMCP_OT_SetFreeTrialHyper3DAPIKey(bpy.types.Operator):
-    bl_idname = "blendermcp.set_hyper3d_free_trial_api_key"
-    bl_label = "Set Free Trial API Key"
-
-    def execute(self, context):
-        prefs = get_blendermcp_addon_preferences(context)
-        if prefs:
-            if not prefs.hyper3d_api_key or prefs.hyper3d_api_key == RODIN_FREE_TRIAL_KEY:
-                prefs.hyper3d_api_key = RODIN_FREE_TRIAL_KEY
-            else:
-                self.report(
-                    {'INFO'},
-                    "Using free trial for this session only; saved private key was kept."
-                )
-        context.scene.blendermcp_hyper3d_api_key = RODIN_FREE_TRIAL_KEY
-        context.scene.blendermcp_hyper3d_mode = 'MAIN_SITE'
-        self.report({'INFO'}, "API Key set successfully!")
-        return {'FINISHED'}
 
 # Operator to start the server
 class BLENDERMCP_OT_StartServer(bpy.types.Operator):
@@ -5390,101 +4100,6 @@ def register():
         default=False
     )
 
-    bpy.types.Scene.blendermcp_use_hyper3d = bpy.props.BoolProperty(
-        name="Use Hyper3D Rodin",
-        description="Enable Hyper3D Rodin generatino integration",
-        default=False
-    )
-
-    bpy.types.Scene.blendermcp_hyper3d_mode = bpy.props.EnumProperty(
-        name="Rodin Mode",
-        description="Choose the platform used to call Rodin APIs",
-        items=[
-            ("MAIN_SITE", "hyper3d.ai", "hyper3d.ai"),
-            ("FAL_AI", "fal.ai", "fal.ai"),
-        ],
-        default="MAIN_SITE"
-    )
-
-    bpy.types.Scene.blendermcp_hyper3d_api_key = bpy.props.StringProperty(
-        name="Hyper3D API Key",
-        subtype="PASSWORD",
-        description="API Key provided by Hyper3D",
-        default=""
-    )
-
-    bpy.types.Scene.blendermcp_use_hunyuan3d = bpy.props.BoolProperty(
-        name="Use Hunyuan 3D",
-        description="Enable Hunyuan asset integration",
-        default=False
-    )
-
-    bpy.types.Scene.blendermcp_hunyuan3d_mode = bpy.props.EnumProperty(
-        name="Hunyuan3D Mode",
-        description="Choose a local or official APIs",
-        items=[
-            ("LOCAL_API", "local api", "local api"),
-            ("OFFICIAL_API", "official api", "official api"),
-        ],
-        default="LOCAL_API"
-    )
-
-    bpy.types.Scene.blendermcp_hunyuan3d_intl_pro = bpy.props.BoolProperty(
-        name="International (Pro)",
-        description="Use the Tencent Cloud International 'Hunyuan-to-3D (Professional)' service "
-                    "(hunyuan API, region ap-singapore, PBR enabled). Enable this when your SecretId/"
-                    "SecretKey come from tencentcloud.com; leave it off for mainland AI3D 3.0 accounts",
-        default=False
-    )
-
-    bpy.types.Scene.blendermcp_hunyuan3d_secret_id = bpy.props.StringProperty(
-        name="Hunyuan 3D SecretId",
-        description="SecretId provided by Hunyuan 3D",
-        default=""
-    )
-
-    bpy.types.Scene.blendermcp_hunyuan3d_secret_key = bpy.props.StringProperty(
-        name="Hunyuan 3D SecretKey",
-        subtype="PASSWORD",
-        description="SecretKey provided by Hunyuan 3D",
-        default=""
-    )
-
-    bpy.types.Scene.blendermcp_hunyuan3d_api_url = bpy.props.StringProperty(
-        name="API URL",
-        description="URL of the Hunyuan 3D API service",
-        default="http://localhost:8081"
-    )
-
-    bpy.types.Scene.blendermcp_hunyuan3d_octree_resolution = bpy.props.IntProperty(
-        name="Octree Resolution",
-        description="Octree resolution for the 3D generation",
-        default=256,
-        min=128,
-        max=512,
-    )
-
-    bpy.types.Scene.blendermcp_hunyuan3d_num_inference_steps = bpy.props.IntProperty(
-        name="Number of Inference Steps",
-        description="Number of inference steps for the 3D generation",
-        default=20,
-        min=20,
-        max=50,
-    )
-
-    bpy.types.Scene.blendermcp_hunyuan3d_guidance_scale = bpy.props.FloatProperty(
-        name="Guidance Scale",
-        description="Guidance scale for the 3D generation",
-        default=5.5,
-        min=1.0,
-        max=10.0,
-    )
-
-    bpy.types.Scene.blendermcp_hunyuan3d_texture = bpy.props.BoolProperty(
-        name="Generate Texture",
-        description="Whether to generate texture for the 3D model",
-        default=False,
-    )
     
     bpy.types.Scene.blendermcp_use_sketchfab = bpy.props.BoolProperty(
         name="Use Sketchfab",
@@ -5499,24 +4114,10 @@ def register():
         default=""
     )
 
-    bpy.types.Scene.blendermcp_use_polypizza = bpy.props.BoolProperty(
-        name="Use Poly Pizza",
-        description="Enable Poly Pizza asset integration",
-        default=False
-    )
-
-    bpy.types.Scene.blendermcp_polypizza_api_key = bpy.props.StringProperty(
-        name="Poly Pizza API Key",
-        subtype="PASSWORD",
-        description="API Key provided by Poly Pizza",
-        default=""
-    )
-
     # Register preferences class
     bpy.utils.register_class(BLENDERMCP_AddonPreferences)
 
     bpy.utils.register_class(BLENDERMCP_PT_Panel)
-    bpy.utils.register_class(BLENDERMCP_OT_SetFreeTrialHyper3DAPIKey)
     bpy.utils.register_class(BLENDERMCP_OT_StartServer)
     bpy.utils.register_class(BLENDERMCP_OT_StopServer)
 
@@ -5537,7 +4138,6 @@ def unregister():
         del bpy.types.blendermcp_server
 
     bpy.utils.unregister_class(BLENDERMCP_PT_Panel)
-    bpy.utils.unregister_class(BLENDERMCP_OT_SetFreeTrialHyper3DAPIKey)
     bpy.utils.unregister_class(BLENDERMCP_OT_StartServer)
     bpy.utils.unregister_class(BLENDERMCP_OT_StopServer)
     bpy.utils.unregister_class(BLENDERMCP_AddonPreferences)
@@ -5546,23 +4146,8 @@ def unregister():
     del bpy.types.Scene.blendermcp_server_running
     del bpy.types.Scene.blendermcp_auto_start_server
     del bpy.types.Scene.blendermcp_use_polyhaven
-    del bpy.types.Scene.blendermcp_use_hyper3d
-    del bpy.types.Scene.blendermcp_hyper3d_mode
-    del bpy.types.Scene.blendermcp_hyper3d_api_key
     del bpy.types.Scene.blendermcp_use_sketchfab
     del bpy.types.Scene.blendermcp_sketchfab_api_key
-    del bpy.types.Scene.blendermcp_use_polypizza
-    del bpy.types.Scene.blendermcp_polypizza_api_key
-    del bpy.types.Scene.blendermcp_use_hunyuan3d
-    del bpy.types.Scene.blendermcp_hunyuan3d_mode
-    del bpy.types.Scene.blendermcp_hunyuan3d_intl_pro
-    del bpy.types.Scene.blendermcp_hunyuan3d_secret_id
-    del bpy.types.Scene.blendermcp_hunyuan3d_secret_key
-    del bpy.types.Scene.blendermcp_hunyuan3d_api_url
-    del bpy.types.Scene.blendermcp_hunyuan3d_octree_resolution
-    del bpy.types.Scene.blendermcp_hunyuan3d_num_inference_steps
-    del bpy.types.Scene.blendermcp_hunyuan3d_guidance_scale
-    del bpy.types.Scene.blendermcp_hunyuan3d_texture
 
     print("BlenderMCP addon unregistered")
 

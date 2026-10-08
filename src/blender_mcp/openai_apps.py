@@ -240,9 +240,6 @@ SCENE_CHANGING_COMMANDS = frozenset({
     "set_texture",
     "download_polyhaven_asset",
     "download_sketchfab_model",
-    "download_polypizza_model",
-    "import_generated_asset",
-    "import_generated_asset_hunyuan",
     "restore_checkpoint",
 })
 

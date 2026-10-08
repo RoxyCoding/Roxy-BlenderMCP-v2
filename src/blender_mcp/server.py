@@ -28,7 +28,7 @@ from .addon_manager import (
     INSTALL_ADDON_COMMAND,
     check_addon_status_on_startup,
 )
-from . import blender_scripts, context_log, generation, guides
+from . import ambientcg, blender_scripts, context_log, guides, session_rules
 from .safe_mode import safe_mode_enabled, validate_code, SandboxViolation, SAFE_MODE_ENV
 from .openai_apps import (
     APP_MIME_TYPE,
@@ -325,13 +325,15 @@ async def server_lifespan(server: FastMCP) -> AsyncIterator[Dict[str, Any]]:
 # Guidance delivered to clients in the `initialize` response. This is the only
 # guidance every client is sure to get: MCP prompts are user-invoked, and the
 # model has no way to fetch one. Per-tool details belong in tool descriptions.
-# Kept short because instructions are injected into every conversation (see
-# #347 on context cost).
+# Claude Code cuts it at 2048 characters, so it holds only what the model needs
+# before its first call; the rest is session_rules.md, attached to the first
+# tool reply of each session (see RoxyMCP below and #347 on context cost).
 SERVER_INSTRUCTIONS = """Roxy Blender MCP drives the user's live Blender. execute_blender_code runs Python there
 with the full bpy API, so anything Blender can do, you can do; look shows you the result.
 
 Start with get_addon_status (Blender version, which libraries and generators are on) and
-get_scene_info.
+get_scene_info. The first tool reply in a conversation ends with this server's session rules
+(guides, quality bar, assets): follow them for the whole conversation.
 
 Scripts run in someone else's Blender:
 - Look shader nodes up by type, never by name (names are localized):
@@ -347,23 +349,29 @@ a smaller max_size keeps long sessions cheap.
 
 Before a risky or sweeping change, checkpoint(action="save"); restore it if the result is worse.
 
-Before rigging, animation, materials, retopology, scene building and lighting, level design or
-bpy work you are unsure of, read the matching guide: get_guide(topic) (an unknown topic lists them).
+Real-world buildings, products and everyday items follow Japanese specifications and design
+unless the user names another region; game assets target Unreal Engine 5 unless the user names
+another engine. Imported models arrive at arbitrary scale: size them from the reported
+world_bounding_box and put them on the ground."""
 
-Unless the user names another country or region (or the setting clearly implies one), every
-real-world building, product, piece of equipment and everyday item follows Japanese
-specifications, design and standards - anything at all, not only what the guide lists. Library
-and generated assets are mostly American or European: check them. get_guide("japanese-design")
-says how to work out the Japanese version. A region the user names always wins.
 
-Objects can also come from existing libraries (search_assets, then import_asset: Poly Haven,
-Sketchfab, Poly Pizza) or be made to order (generate_3d: one new textured model from text or an
-image, 1-3 minutes, may cost the user a credit). A generation is one object, never a whole
-scene, the ground or parts to assemble. Imported and generated models arrive at arbitrary
-scale: use the reported world_bounding_box to size them and put them on the ground."""
+class RoxyMCP(FastMCP):
+    """FastMCP that attaches the session rules to the first model-facing tool reply."""
+
+    async def call_tool(self, name, arguments):
+        result = await super().call_tool(name, arguments)
+        tool = self._tool_manager.get_tool(name)
+        if tool is None or is_app_only(tool):
+            return result
+        try:
+            return session_rules.attach(result, session_rules.session_key(self.get_context()))
+        except Exception as e:
+            logger.debug(f"Session rules not attached: {e}")
+            return result
+
 
 # Create the MCP server with lifespan support
-mcp = FastMCP(
+mcp = RoxyMCP(
     ADDON_DISPLAY_NAME,
     lifespan=server_lifespan,
     instructions=SERVER_INSTRUCTIONS,
@@ -423,28 +431,25 @@ def get_blender_connection():
 
 
 def _integrations(blender: BlenderConnection) -> dict:
-    """Which libraries (search_assets) and generators (generate_3d) are on."""
+    """Which asset libraries (search_assets) are on. ambientCG needs no switch."""
     status = {}
-    for name in ("polyhaven", "sketchfab", "polypizza", "hunyuan3d", "hyper3d"):
+    for name in ("polyhaven", "sketchfab"):
         try:
             reply = blender.send_command(f"get_{name}_status")
             status[name] = "on" if reply.get("enabled") else "off"
         except Exception as e:
             status[name] = "not in this addon version" if _addon_lacks(e) else "unknown"
-    return {
-        "libraries": {k: status[k] for k in ("polyhaven", "sketchfab", "polypizza")},
-        "generators": {k: status[k] for k in ("hunyuan3d", "hyper3d")},
-    }
+    status["ambientcg"] = "on"
+    return {"libraries": status}
 
 
 @mcp.tool()
 async def get_addon_status(ctx: Context, user_prompt: str = "") -> str:
     """
     Check the connected Blender: its version, whether the addon matches this server, and which
-    asset libraries and 3D generators are switched on. Call it once at the start.
+    asset libraries are switched on. Call it once at the start.
 
-    `libraries` are the search_assets sources and `generators` the generate_3d providers, each
-    on or off for this user.
+    `libraries` are the search_assets sources, each on or off for this user.
 
     If outdated, `update_command` is how the user updates it (then restart or re-enable the
     addon in Blender).
@@ -1266,264 +1271,10 @@ async def _download_sketchfab(
         logger.error(traceback.format_exc())
         return f"Error downloading Sketchfab model: {str(e)}"
 
-# Poly Pizza's API filters on numeric ids (Category 0-11; License 0 = CC-BY,
-# 1 = CC0) and silently ignores names. Human-friendly names are resolved here,
-# on the server, which is the single source of truth for the mapping: fixes to
-# it ship with the package instead of waiting for users to update the Blender
-# addon. The addon only validates ids and builds the Capitalized query.
-POLYPIZZA_CATEGORIES = {
-    "Food & Drink": 0,
-    "Clutter": 1,
-    "Weapons": 2,
-    "Transport": 3,
-    "Furniture & Decor": 4,
-    "Objects": 5,
-    "Nature": 6,
-    "Animals": 7,
-    "Buildings": 8,
-    "People & Characters": 9,
-    "Scenes & Levels": 10,
-    "Other": 11,
-}
-
-# Spellings a caller is likely to use, mapped onto the ids above.
-POLYPIZZA_CATEGORY_ALIASES = {
-    "food": 0, "drink": 0, "drinks": 0,
-    "weapon": 2,
-    "vehicle": 3, "vehicles": 3, "transportation": 3,
-    "furniture": 4, "decor": 4,
-    "object": 5, "prop": 5, "props": 5,
-    "plant": 6, "plants": 6,
-    "animal": 7,
-    "building": 8, "architecture": 8, "buildingsarchitecture": 8,
-    "person": 9, "character": 9, "characters": 9, "people": 9,
-    "scene": 10, "scenes": 10, "level": 10, "levels": 10,
-}
-
-
-def _polypizza_normalize(value):
-    """Fold a human-written filter value down to comparable characters."""
-    return "".join(ch for ch in str(value).lower() if ch.isalnum())
-
-
-def _polypizza_category_id(category):
-    """Coerce a category name or id into the numeric id the API expects."""
-    if category is None or category == "":
-        return None
-    if isinstance(category, bool):
-        raise ValueError("Poly Pizza category must be a name or an id in 0-11")
-    if isinstance(category, int) or (isinstance(category, str) and category.strip().lstrip("-").isdigit()):
-        value = int(category)
-        if not 0 <= value <= 11:
-            raise ValueError(f"Poly Pizza category id {value} is out of range (valid ids are 0-11)")
-        return value
-
-    key = _polypizza_normalize(category)
-    for name, value in POLYPIZZA_CATEGORIES.items():
-        if _polypizza_normalize(name) == key:
-            return value
-    if key in POLYPIZZA_CATEGORY_ALIASES:
-        return POLYPIZZA_CATEGORY_ALIASES[key]
-    raise ValueError(
-        f"Unknown Poly Pizza category {category!r}. Valid categories: "
-        + ", ".join(POLYPIZZA_CATEGORIES)
-    )
-
-
-def _polypizza_licence_id(licence):
-    """Coerce a licence name or id into the numeric id the API expects."""
-    if licence is None or licence == "":
-        return None
-    if isinstance(licence, bool):
-        raise ValueError("Poly Pizza licence must be 'CC0', 'CC-BY', 0 or 1")
-    if isinstance(licence, int) or (isinstance(licence, str) and licence.strip().lstrip("-").isdigit()):
-        value = int(licence)
-        if value not in (0, 1):
-            raise ValueError(f"Poly Pizza licence id {value} is invalid (0 = CC-BY, 1 = CC0)")
-        return value
-
-    key = _polypizza_normalize(licence)
-    if key.startswith("ccby"):
-        return 0
-    if key.startswith("cc0") or key == "publicdomain":
-        return 1
-    raise ValueError(f"Unknown Poly Pizza licence {licence!r}. Use 'CC0' or 'CC-BY'.")
-
-
-
-@telemetry_tool("search_polypizza_models")
-async def _search_polypizza(
-    ctx: Context,
-    query: str = "",
-    category: str | None = None,
-    licence: str | None = None,
-    animated: bool = False,
-    limit: int = 20, user_prompt: str = "") -> str:
-    """search_assets(source="polypizza"): matching models with licence and triangle count."""
-    try:
-        try:
-            category_id = _polypizza_category_id(category)
-            licence_id = _polypizza_licence_id(licence)
-        except ValueError as e:
-            return f"Error: {str(e)}"
-
-        if not (query or "").strip() and category_id is None and licence_id is None and not animated:
-            return (
-                "Error: Poly Pizza needs a search keyword or at least one filter "
-                "(category, licence, or animated=True)."
-            )
-
-        blender = get_blender_connection()
-        logger.info(
-            f"Searching Poly Pizza models with query: {query}, category: {category}, "
-            f"licence: {licence}, animated: {animated}, limit: {limit}"
-        )
-        result = blender.send_command("search_polypizza_models", {
-            "query": query,
-            "category": category_id,
-            "licence": licence_id,
-            "animated": animated,
-            "limit": limit
-        })
-
-        if result is None:
-            logger.error("Received None result from Poly Pizza search")
-            return "Error: Received no response from Poly Pizza search"
-
-        if "error" in result:
-            logger.error(f"Error from Poly Pizza search: {result['error']}")
-            return f"Error: {result['error']}"
-
-        models = result.get("results", []) or []
-        if not models:
-            described = query or "the requested filters"
-            return f"No models found matching '{described}'"
-
-        total = result.get("total", len(models))
-        formatted_output = f"Found {len(models)} models (of {total} total) matching '{query or 'the given filters'}':\n\n"
-        credit_note = (
-            "CC-BY models must be credited. import_asset stores the required "
-            "attribution string on the imported object as a custom property.\n"
-        )
-        blocks = {}
-        options = []
-
-        for model in models:
-            if model is None:
-                continue
-
-            model_name = model.get("Title", "Unnamed model")
-            model_id = model.get("ID", "Unknown ID")
-            licence_label = model.get("Licence") or "Unknown"
-            tri_count = model.get("Tri Count")
-            block = f"- {model_name} (ID: {model_id})\n"
-            block += f"  Author: {model.get('Creator') or 'Unknown author'}\n"
-            block += f"  Licence: {licence_label}\n"
-            block += f"  Tri count: {tri_count if tri_count else 'Unknown'}\n"
-            block += f"  Category: {model.get('Category') or 'Unknown'}\n"
-            block += f"  Animated: {'Yes' if model.get('Animated') else 'No'}\n"
-            formatted_output += block + "\n"
-            blocks[model_id] = f"{block}\n{credit_note}"
-            thumbnail = model.get("Thumbnail")
-            options.append(PickerOption(
-                id=model_id,
-                title=model_name,
-                description=" · ".join(filter(None, [
-                    model.get("Creator"), licence_label, f"{tri_count} tris" if tri_count else None,
-                ])),
-                thumbnail=thumbnail if isinstance(thumbnail, str) and thumbnail.startswith("https://") else None,
-            ))
-
-        formatted_output += credit_note
-
-        described = query or category or "your scene"
-        picked = await pick_asset(ctx, f"Pick a Poly Pizza model for: {described}", "Model", options)
-        return picked_reply("Poly Pizza", picked, blocks, formatted_output) if picked else formatted_output
-    except Exception as e:
-        logger.error(f"Error searching Poly Pizza models: {str(e)}")
-        import traceback
-        logger.error(traceback.format_exc())
-        return f"Error searching Poly Pizza models: {str(e)}"
-
-
-@trajectory_tool("download_polypizza_model")
-async def _download_polypizza(
-    ctx: Context,
-    model_id: str,
-    normalize_size: bool = False,
-    target_size: float = 1.0, user_prompt: str = "") -> str:
-    """import_asset(source="polypizza"): import a model and record its attribution on it."""
-    try:
-        blender = get_blender_connection()
-        logger.info(
-            f"Downloading Poly Pizza model: {model_id}, normalize_size={normalize_size}, "
-            f"target_size={target_size}"
-        )
-
-        result = blender.send_command("download_polypizza_model", {
-            "model_id": model_id,
-            "normalize_size": normalize_size,
-            "target_size": target_size
-        })
-
-        if result is None:
-            logger.error("Received None result from Poly Pizza download")
-            return "Error: Received no response from Poly Pizza download request"
-
-        if "error" in result:
-            logger.error(f"Error from Poly Pizza download: {result['error']}")
-            return f"Error: {result['error']}"
-
-        if result.get("success"):
-            imported_objects = result.get("imported_objects", [])
-            object_names = ", ".join(imported_objects) if imported_objects else "none"
-
-            output = f"Successfully imported model.\n"
-            output += f"Created objects: {object_names}\n"
-
-            if result.get("title"):
-                output += f"Title: {result['title']}\n"
-
-            if result.get("tri_count"):
-                output += f"Tri count: {result['tri_count']}\n"
-
-            # Add dimension info if available
-            if result.get("dimensions"):
-                dims = result["dimensions"]
-                output += f"Dimensions (X, Y, Z): {dims[0]:.3f} x {dims[1]:.3f} x {dims[2]:.3f} meters\n"
-
-            # Add bounding box info if available
-            if result.get("world_bounding_box"):
-                bbox = result["world_bounding_box"]
-                output += f"Bounding box: min={bbox[0]}, max={bbox[1]}\n"
-
-            # Add normalization info if applied
-            if result.get("normalized"):
-                scale = result.get("scale_applied", 1.0)
-                output += f"Size normalized: scale factor {scale:.6f} applied (target size: {target_size}m)\n"
-
-            output += f"Licence: {result.get('licence') or 'Unknown'}\n"
-            if result.get("attribution"):
-                output += f"Attribution: {result['attribution']}\n"
-                output += (
-                    "Stored on the imported object as polypizza_attribution. Surface it to the user "
-                    "if the licence is CC-BY.\n"
-                )
-
-            return output
-        else:
-            return f"Failed to download model: {result.get('message', 'Unknown error')}"
-    except Exception as e:
-        logger.error(f"Error downloading Poly Pizza model: {str(e)}")
-        import traceback
-        logger.error(traceback.format_exc())
-        return f"Error downloading Poly Pizza model: {str(e)}"
-
-
 
 # The model-facing tool surface. Each tool covers a job the model can't do
-# with execute_blender_code alone: seeing the scene (look), paid and keyed
-# services (generate_3d, search_assets, import_asset), and craft knowledge it
+# with execute_blender_code alone: seeing the scene (look), asset libraries
+# (search_assets, import_asset), and craft knowledge it
 # loads only when needed (get_guide). The per-provider functions above are
 # their building blocks and no longer registered as tools.
 
@@ -1663,131 +1414,21 @@ def _look_via_script(args: dict) -> CallToolResult:
     return CallToolResult(content=[_png_content(png), TextContent(type="text", text=_look_caption(info))])
 
 
-def _generation_send(command: str, params: dict):
-    try:
-        return get_blender_connection().send_command(command, params)
-    except Exception as e:
-        if _addon_lacks(e):
-            label = "Hunyuan3D" if "hunyuan" in command else "Hyper3D Rodin"
-            raise generation.Unsupported(missing_feature(label, label))
-        raise
-
-
-def _own_key_generators(blender: BlenderConnection) -> dict[str, bool]:
-    enabled = {}
-    for name, command in (("hunyuan3d", "get_hunyuan3d_status"), ("hyper3d", "get_hyper3d_status")):
-        try:
-            enabled[name] = bool(blender.send_command(command).get("enabled"))
-        except Exception:
-            enabled[name] = False
-    return enabled
-
-
-def _pending_generations() -> "generation.Pending":
-    return generation.Pending(context_log.context_log_path().with_name("pending-generations.json"))
-
-
-async def _generation_reply(ctx: Context, job: "generation.Job", wait_seconds: float, note: str = "") -> str:
-    async def progress(done, total):
-        await ctx.report_progress(done, total)
-
-    imported, detail = await generation.wait_and_import(
-        _generation_send, job, wait_seconds, progress, pending=_pending_generations())
-    if not imported:
-        return f"Still generating ({detail}). {job.resume_hint}{note}"
-    reply = f"Generated and imported '{job.name}' with {job.provider}."
-    try:
-        bounds = _run_script(blender_scripts.BOUNDS, {"names": [job.name]})
-    except Exception:
-        bounds = []
-    for b in bounds:
-        lo, hi = b["world_bounding_box"]
-        reply += (f" world_bounding_box min {lo}, max {hi} (size {b['size']} m). Generated models have "
-                  "arbitrary scale and facing: scale it to real size, put its lowest point on the ground, "
-                  "rotate it to face the right way, then look(mode=\"angles\", target=[\"" + b["name"] + "\"]).")
-    return reply + note
-
-
-@mcp.tool()
-@trajectory_tool("generate_3d")
-async def generate_3d(
-    ctx: Context,
-    prompt: str | None = None,
-    image: str | None = None,
-    name: str | None = None,
-    provider: str = "auto",
-    bbox_condition: list[float] | None = None,
-    job: str | None = None,
-    wait_seconds: int = 50,
-    user_prompt: str = "",
-) -> str:
-    """
-    Make one new textured 3D model from a text prompt or an image, and import it.
-
-    One object per call: not a whole scene, the ground, or parts to assemble. It arrives at
-    arbitrary scale and facing. Each call can cost the user money, so duplicate a generated
-    object for repeats.
-
-    Waits up to wait_seconds (at most 45), then imports. Generation usually takes 1-3 minutes: if
-    it isn't done in time you get a job handle; call generate_3d(job=..., name=...) again to keep
-    waiting. Repeating a request whose generation is still unfinished resumes it instead of paying
-    again.
-
-    Parameters:
-    - prompt: Short English description of one object ("weathered wooden treasure chest").
-    - image: Instead of a prompt: an absolute image file path or an http(s) URL. Images attached in
-      chat can't be passed: ask the user for a path or URL, don't fall back to text without asking.
-    - name: Object name in the scene. Defaults to one made from the prompt.
-    - provider: auto (default), hunyuan3d or hyper3d. Auto picks one the user has switched on.
-    - bbox_condition: hyper3d only: [length, width, height] proportions.
-    - job: A handle from an earlier call, to resume waiting for it.
-    - user_prompt: The user's own words describing what they want, quoted verbatim.
-    """
-    call_start = time.monotonic()
-    wait_seconds = max(10, min(int(wait_seconds or 50), generation.MAX_CALL_S))
-    try:
-        if job:
-            return await _generation_reply(ctx, generation.Job.parse(job, name or "Generated"), wait_seconds)
-        if bool(prompt) == bool(image):
-            return "Error: give exactly one of prompt or image."
-        blender = get_blender_connection()
-        chosen = generation.choose_provider(provider, _own_key_generators(blender))
-        note = ""
-        pending = _pending_generations()
-        key = generation.request_key(chosen, prompt, image, bbox_condition)
-        started = pending.find(key)
-        if started:
-            note = (" This request was already generating from an earlier call, so it resumed that "
-                    "generation instead of starting a new one." + note)
-        else:
-            started = generation.submit(
-                _generation_send, chosen, name or generation.default_name(prompt), prompt, image,
-                bbox_condition)
-            if isinstance(started, str):
-                return started + note
-            pending.add(key, started)
-        # Submitting (an image upload, say) spends the same client timeout as waiting.
-        remaining = wait_seconds - (time.monotonic() - call_start)
-        return await _generation_reply(ctx, started, remaining, note)
-    except generation.GenerationError as e:
-        return f"Error: {e}"
-    except Exception as e:
-        logger.error(f"Error generating model: {e}")
-        return f"Error generating model: {e}"
-
-
-ASSET_SOURCES = ("polyhaven", "sketchfab", "polypizza")
+ASSET_SOURCES = ("polyhaven", "ambientcg", "sketchfab")
 
 
 def _unavailable(source: str, e: Exception, action: str) -> str:
     if _addon_lacks(e):
-        label = {"polyhaven": "Poly Haven", "sketchfab": "Sketchfab", "polypizza": "Poly Pizza"}[source]
+        label = {"polyhaven": "Poly Haven", "ambientcg": "ambientCG", "sketchfab": "Sketchfab"}[source]
         return missing_feature(f"{label} {action}", label)
     return f"Error: {e}"
 
 
 def _preview_images(source: str, listing: str, count: int) -> list[ImageContent]:
     """Thumbnails of the first `count` results, read off the listing's ids."""
+    if source == "ambientcg" and count > 0:
+        ids = re.findall(r"\(ID: ([^)]+)\)", listing)[:count]
+        return [ImageContent(type="image", data=data, mimeType=mime) for data, mime in ambientcg.thumbnails(ids)]
     pattern = {"polyhaven": r"\(ID: ([^)]+)\)", "sketchfab": r"\(UID: ([^)]+)\)"}.get(source)
     if not pattern or count <= 0:
         return []
@@ -1813,8 +1454,6 @@ async def search_assets(
     category: str | None = None,
     attributes: dict | None = None,
     min_size_m: float | None = None,
-    licence: str | None = None,
-    animated: bool = False,
     limit: int = 20,
     previews: int = 0,
     user_prompt: str = "",
@@ -1823,24 +1462,23 @@ async def search_assets(
     Search a library of existing assets. The sources:
     - polyhaven: HDRIs, PBR textures and realistic models, all CC0. Search understands intent and
       synonyms ("couch" finds sofas).
+    - ambientcg: CC0 PBR materials (about 2000), including surfaces Poly Haven lacks, Japanese
+      ones such as tatami among them. Every word of the query must match; keep it to 1-2 words.
     - sketchfab: a large catalogue of user-made models, realistic and specific ones included;
       licences and face counts vary per model.
-    - polypizza: stylised low-poly models, CC0 or CC-BY (credit the creator).
 
     Parameters:
-    - source: polyhaven, sketchfab or polypizza.
+    - source: polyhaven, ambientcg or sketchfab.
     - query: What you're looking for, in plain words.
     - asset_type: polyhaven only: hdris, textures, models or all.
     - category: Optional. polyhaven: a category path ("Metal/Sheet & Corrugated"). sketchfab:
-      comma-separated categories. polypizza: e.g. "Furniture & Decor", "Nature", "Animals".
+      comma-separated categories.
     - attributes: polyhaven only: filters like {"weather": "clear"}; an unknown key errors with the
       valid ones.
     - min_size_m: polyhaven only: minimum real-world size in metres. Use 2+ for walls, floors and
       ground so textures don't visibly repeat.
-    - licence: polypizza only: "CC0" or "CC-BY".
-    - animated: polypizza only: animated models only.
     - limit: Number of results.
-    - previews: Attach thumbnails of the first N results (max 6; polyhaven and sketchfab). Cheaper
+    - previews: Attach thumbnails of the first N results (max 6; polyhaven, ambientcg, sketchfab). Cheaper
       than importing the wrong asset.
     - user_prompt: The user's own words describing what they want, quoted verbatim.
 
@@ -1855,15 +1493,13 @@ async def search_assets(
             listing = await _search_polyhaven(
                 ctx, query=query or None, asset_type=asset_type, category=category, attributes=attributes,
                 min_size_m=min_size_m, limit=limit, user_prompt=user_prompt)
-        elif source == "sketchfab":
+        elif source == "ambientcg":
+            listing = await ambientcg.search(query, asset_type=asset_type, limit=limit)
+        else:
             if not query:
                 return "Error: sketchfab needs a query."
             listing = await _search_sketchfab(
                 ctx, query=query, categories=category, count=limit, user_prompt=user_prompt)
-        else:
-            listing = await _search_polypizza(
-                ctx, query=query, category=category, licence=licence, animated=animated, limit=limit,
-                user_prompt=user_prompt)
     except Exception as e:
         return _unavailable(source, e, "search")
     if listing.lower().startswith("error") and _addon_lacks(listing):
@@ -1890,16 +1526,17 @@ async def import_asset(
     Download an asset found with search_assets and bring it into the scene.
 
     Parameters:
-    - source: polyhaven, sketchfab or polypizza.
+    - source: polyhaven, ambientcg or sketchfab.
     - id: The asset's id (UID for sketchfab) from search_assets.
     - asset_type: polyhaven only, required: hdris (becomes the world lighting), textures (builds a
       PBR material) or models.
     - target_size: Size in metres of the model's largest dimension (chair 1.0, car 4.5, cup 0.12).
-      Required for sketchfab, recommended for polypizza; library models come at arbitrary scale.
-    - apply_to: polyhaven textures: object names to put the material on (replaces their materials).
-      Without it the material is created but unused, and is lost if the file is saved.
-    - resolution: polyhaven: 1k, 2k, 4k or 8k. 1k-2k for background, 4k for close-ups.
-    - file_format: polyhaven, optional: hdr/exr for HDRIs, jpg/png/exr for textures.
+      Required for sketchfab; library models come at arbitrary scale.
+    - apply_to: polyhaven textures and ambientcg: object names to put the material on (replaces
+      their materials). Without it the material is created but unused, and is lost if the file is saved.
+    - resolution: polyhaven and ambientcg: 1k, 2k, 4k or 8k. 1k-2k for background, 4k for close-ups.
+    - file_format: polyhaven, optional: hdr/exr for HDRIs, jpg/png/exr for textures. ambientcg:
+      jpg (default) or png.
     - user_prompt: The user's own words describing what they want, quoted verbatim.
 
     Afterwards check the reported bounding box, put the object on the ground, and look at it.
@@ -1916,6 +1553,35 @@ async def import_asset(
     if "error" in reply.lower() and _addon_outdated() and ADDON_UPDATE_HINT not in reply:
         reply += f"\n\nThe Blender addon is out of date, which may be the cause. {ADDON_UPDATE_HINT}"
     return reply
+
+
+def _download_ambientcg(asset_id, resolution, file_format, apply_to) -> str:
+    """import_asset(source="ambientcg"): the addon downloads the zip and builds the material."""
+    result = get_blender_connection().send_command("download_ambientcg_material", {
+        "asset_id": asset_id,
+        "resolution": (resolution or "2k").upper(),
+        "file_format": (file_format or "jpg").upper(),
+        "apply_to": list(apply_to or []),
+    })
+    if result.get("error"):
+        return f"Error: {result['error']}"
+    lines = [f"Imported ambientCG material {asset_id} ({result.get('resolution')}) as material "
+             f"'{result.get('material')}' with maps: {', '.join(result.get('maps') or [])}."]
+    size = result.get("size_m")
+    if size:
+        lines.append(f"One texture tile covers {size[0]:g} x {size[1]:g} m: for real-world scale set the "
+                     "Mapping node's Scale to surface size / tile size.")
+    else:
+        lines.append("ambientCG gives no real-world size for this material: judge the tiling with look.")
+    if result.get("applied"):
+        lines.append(f"Applied to: {', '.join(result['applied'])} (their previous materials were replaced).")
+    else:
+        lines.append("Not applied to anything: pass apply_to, or assign it yourself; an unused material is "
+                     "dropped when the file is saved.")
+    if result.get("not_found"):
+        lines.append(f"Not found, so not applied: {', '.join(result['not_found'])}.")
+    lines.append(f"{ambientcg.CREDIT} {result.get('url', '')}")
+    return "\n".join(lines)
 
 
 async def _import_asset(ctx, source, id, asset_type, target_size, apply_to, resolution, file_format,
@@ -1936,13 +1602,11 @@ async def _import_asset(ctx, source, id, asset_type, target_size, apply_to, reso
                 reply = reply.replace(" " + POLYHAVEN_UNUSED_NOTE + " ", "\n" + applied_note)
                 reply = reply.replace(" " + POLYHAVEN_UNUSED_NOTE, "\n" + applied_note)
             return reply
-        if source == "sketchfab":
-            if not target_size:
-                return "Error: sketchfab needs target_size (metres, largest dimension)."
-            return await _download_sketchfab(ctx, uid=id, target_size=target_size, user_prompt=user_prompt)
-        return await _download_polypizza(
-            ctx, model_id=id, normalize_size=bool(target_size), target_size=target_size or 1.0,
-            user_prompt=user_prompt)
+        if source == "ambientcg":
+            return _download_ambientcg(id, resolution, file_format, apply_to)
+        if not target_size:
+            return "Error: sketchfab needs target_size (metres, largest dimension)."
+        return await _download_sketchfab(ctx, uid=id, target_size=target_size, user_prompt=user_prompt)
     except Exception as e:
         return _unavailable(source, e, "import")
 
@@ -1950,7 +1614,8 @@ async def _import_asset(ctx, source, id, asset_type, target_size, apply_to, reso
 @mcp.tool(annotations=ToolAnnotations(readOnlyHint=True))
 def get_guide(topic: str) -> str:
     """Read a workflow guide: bpy, scene, level-design, animation, rigging,
-    retopology, materials or japanese-design. An unknown topic returns the available guide index.
+    retopology, materials, japanese-design, quality-review, surface-realism,
+    lighting-and-rendering, environment-art, geometry-nodes or unreal-engine. An unknown topic returns the available guide index.
     """
     return guides.get(topic)
 
