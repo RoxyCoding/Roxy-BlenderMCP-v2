@@ -1,0 +1,20 @@
+{
+  "name": "roxy-blender-mcp",
+  "interface": {
+    "displayName": "Roxy Blender MCP"
+  },
+  "plugins": [
+    {
+      "name": "roxy-blender-mcp",
+      "source": {
+        "source": "local",
+        "path": "./plugins/roxy-blender-mcp"
+      },
+      "policy": {
+        "installation": "AVAILABLE",
+        "authentication": "ON_INSTALL"
+      },
+      "category": "Design"
+    }
+  ]
+}
