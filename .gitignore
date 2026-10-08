@@ -5,7 +5,6 @@ build/
 dist/
 wheels/
 *.egg-info
-tests/
 # Virtual environments
 .venv
 
@@ -18,21 +17,11 @@ local_tests/
 /test_*.py
 .pytest_cache/
 
-supabase/
-
 scripts/
 
-# Legacy PyPI shim — built and published separately, see runbook
-legacy-shim/
-
-# Secrets: Premium keys live only as Edge Function secrets
+# Secrets
 .env
 .env.*
-supabase/.env
-supabase/.temp/
 *.pem
 *.key
 .secrets/
-
-# Local eval harness (see evals/README.md)
-evals/
