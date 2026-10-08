@@ -1,6 +1,6 @@
 ---
 title: Retopology and mesh cleanup
-summary: Turning generated or scanned meshes into clean, lighter geometry - cleanup, remeshing, decimation, UVs and baking detail back.
+summary: Turning generated or scanned meshes into clean, lighter geometry - cleanup, remeshing, decimation, smooth shading, UVs, baking detail back, game LODs and 3D printing.
 ---
 
 # Retopology and mesh cleanup
@@ -16,6 +16,7 @@ on where the mesh is going:
 | 3D print | Voxel remesh for a watertight solid |
 
 Always work on a copy and keep the original as the bake source: `low = src.copy(); low.data = src.data.copy()`.
+Remeshing and decimation can't be undone from here: `checkpoint(action="save")` before them.
 
 ## Diagnose
 
@@ -52,6 +53,29 @@ bm.to_mesh(obj.data); bm.free()
 
 Face budgets: hero game character 15–50k tris, prop 500–5k, background 50–500.
 
+## Smooth shading
+
+Auto Smooth (`mesh.use_auto_smooth`) was removed in 4.1. Now shade smooth, then mark sharp edges
+by angle with the data API (no context needed):
+
+```python
+import math
+for p in obj.data.polygons:
+    p.use_smooth = True
+obj.data.set_sharp_from_angle(angle=math.radians(30))
+```
+
+`bpy.ops.object.shade_auto_smooth()` instead adds a "Smooth by Angle" modifier, which stays live
+but must be applied (or exported with modifiers) for engines. Hard-surface models also benefit
+from a Weighted Normal modifier after any Bevel.
+
+## Game LODs
+
+Make each LOD from the finished LOD0 with Decimate (collapse) and keep UVs: about 50%, 25% and
+10% of LOD0's triangles. Name them `<Name>_LOD0`, `_LOD1`... (Unreal and Unity both pick these
+up on FBX import; Unreal also expects `SM_` on the name). Check each with
+`get_scene_info(fields=["topology"])` and from the distance it will be seen at.
+
 ## UVs
 
 ```python
@@ -70,8 +94,25 @@ Bake normals (and colour) from the original high mesh to the low one's UVs, in C
    Texture node using it in the low mesh's material, set as the active node.
 2. Select high, make low active; `scene.render.bake.use_selected_to_active = True`,
    `cage_extrusion` ~1–2% of the object size.
-3. `bpy.ops.object.bake(type="NORMAL")`; for colour use `type="DIFFUSE"` with only the colour pass.
-4. Save the image, wire it into a Normal Map node, and compare with `look(mode="angles")`.
+3. `scene.render.bake.margin = 16` (pixels at 2048, so mip-mapping doesn't bleed seams), then
+   `bpy.ops.object.bake(type="NORMAL")`; for colour use `type="DIFFUSE"` with only the colour pass.
+4. Save the image or the bake is lost when Blender closes:
+   `img.filepath_raw = "//textures/Low_Normal.png"; img.file_format = "PNG"; img.save()`.
+5. Wire it into a Normal Map node (see `get_guide("materials")`) and compare with `look(mode="angles")`.
 
 Switching the engine to Cycles for the bake: read the current engine first and restore it after
 (see `get_guide("bpy")`).
+
+## 3D printing
+
+- Work in real units and check them: `scene.unit_settings.scale_length` 0.001 with
+  `length_unit = "MILLIMETERS"` makes 1 unit = 1 mm, as slicers expect; or keep metres and export
+  with a scale of 1000.
+- The mesh must be one closed, manifold solid: voxel remesh fixes holes and self-intersections.
+  `get_scene_info(fields=["topology"])` should report no non-manifold or boundary edges.
+- Walls at least 1-2 mm thick for FDM printers (0.5-1 mm for resin); thin details break.
+  Solidify (`modifiers.new("Solidify", "SOLIDIFY")`) open shells before remeshing.
+- Flat base on the build plate; split tall or overhanging models into parts.
+- Export STL (or OBJ) with the built-in exporters: `bpy.ops.wm.stl_export(filepath=...)`
+  (the old `export_mesh.stl` was removed in 4.2) or `bpy.ops.wm.obj_export(...)`; read their
+  arguments first.

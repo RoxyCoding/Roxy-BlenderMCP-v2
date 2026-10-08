@@ -10,16 +10,18 @@ before preparing the mesh, before skinning, and once the rig deforms well.
 
 ## Before rigging
 
-- The mesh must have applied scale and rotation, sit at the origin on the ground, and face -Y
-  (Blender's front). Rigify and auto-weights assume this.
-- Merge duplicate vertices (`bmesh.ops.remove_doubles`) and remove loose parts. Generated meshes
-  are often many disconnected islands, which makes automatic weights fail.
+- For a new character, use real size, applied scale and rotation, and a -Y-facing rest pose to
+  match the chosen metarig. Origin and facing are workflow conventions, not automatic-weight
+  requirements. Do not apply transforms to an existing animated or bound rig without testing a copy.
+- Inspect duplicate vertices, loose geometry, disconnected islands and interior faces before
+  cleanup. Merge only unintended duplicates (`bmesh.ops.remove_doubles`, with a size-appropriate
+  distance); preserve intentional separate parts, UV seams and details. Islands alone are not a
+  reason to delete geometry or remesh the original.
 - Characters rig best in A-pose or T-pose with a bit of bend at elbows and knees.
 
-Models from `generate_3d` or a library need this every time: arbitrary scale and facing, often
-triangulated, with islands and inner faces. Scale to real size, rotate to face -Y, apply transforms,
-merge by distance, then count islands. If there are many, don't fix the textured mesh: skin a
-voxel-remeshed copy and transfer the weights (see Skinning). A generated character in a relaxed pose
+Inspect models from `generate_3d` or a library for arbitrary scale and facing, triangulation,
+islands and inner faces. Prepare only what needs fixing. If automatic weights fail, preserve the
+textured original and try a voxel-remeshed copy for weight transfer (see Skinning). A generated character in a relaxed pose
 with arms down still rigs, but the shoulders deform worse than from an A-pose.
 
 ## Humans and animals: Rigify
@@ -29,7 +31,7 @@ bird, shark...). The set differs between versions, so list them instead of guess
 
 ```python
 import addon_utils
-# default_set=True is required: without it Rigify's settings aren't registered and generation fails.
+# Enable Rigify and create its entry in the add-on preferences.
 addon_utils.enable("rigify", default_set=True)
 print([op for op in dir(bpy.ops.object) if op.endswith("_metarig_add")])
 
@@ -107,8 +109,22 @@ target and confirm the joint bends the right way.
 
 ## Mechanical rigs: parenting, constraints, drivers
 
-Mechanical things (doors, wheels, robots) usually don't need skinning: parent rigid parts to bones
-(`part.parent = rig; part.parent_type = "BONE"; part.parent_bone = "arm"`), which never deforms badly.
+Mechanical things (doors, wheels, robots) usually don't need skinning: parent rigid parts to bones.
+Preserve the part's world transform so changing its parent does not move it:
+
+```python
+assert "arm" in rig.pose.bones
+world = part.matrix_world.copy()
+part.parent = rig; part.parent_type = "BONE"; part.parent_bone = "arm"
+bpy.context.view_layer.update()
+part.matrix_world = world
+bpy.context.view_layer.update()
+assert all(abs(part.matrix_world[r][c] - world[r][c]) < 1e-5
+           for r in range(4) for c in range(4))
+```
+
+For constrained or already animated parts, test on a copy: constraints and keyed local transforms
+can override the assigned world transform.
 
 - Limit Rotation (`"LIMIT_ROTATION"`) on hinges keeps doors and joints in range; Damped Track
   (`"DAMPED_TRACK"`) aims a part at a target (pistons, eyes, turrets); Copy Rotation ties parts
@@ -176,7 +192,14 @@ mirrored.name = "thigh.R"
 
 ## Skinning
 
-Automatic weights need the mesh selected and the armature selected and active, in object mode:
+Automatic weights overwrite existing groups with matching bone names. Save a checkpoint first;
+for a rebind, test a duplicate mesh with independent mesh data. If weights should be retained,
+keep the groups and set the existing Armature modifier's object to the intended rig instead of
+rerunning automatic weights; verify bone names and the rest pose still match. Inspect existing
+parenting and Armature modifiers before rebinding to avoid duplicate deformation.
+
+For a new binding, automatic weights need the mesh selected and the armature selected and active,
+in object mode:
 
 ```python
 bpy.ops.object.mode_set(mode="OBJECT")
@@ -186,31 +209,43 @@ bpy.context.view_layer.objects.active = rig
 bpy.ops.object.parent_set(type="ARMATURE_AUTO")
 ```
 
-Then fix the modifier stack. The Armature modifier is added last, after any Subdivision or
-Mirror, so the mesh is smoothed before it deforms: slow and wrong. Move it to the top, and use
-Preserve Volume so twisting joints (wrists, forearms) don't collapse:
+Inspect the modifier stack rather than moving Armature unconditionally to the top. A typical
+half-mesh character uses **Mirror → Armature → Subdivision**: Mirror creates the other side and
+its paired weights before the rig deforms both sides independently, then Subdivision smooths the
+result. Other modifiers need ordering according to their purpose; check the posed result after
+each change. Select the modifier bound to this rig, not just the first Armature modifier.
+
+Preserve Volume can reduce twisting collapse in Blender. Compare both settings; game-engine
+skinning may not reproduce this deformation, so also check the exported mesh in the target engine:
 
 ```python
-mod = next(m for m in body.modifiers if m.type == "ARMATURE")
-body.modifiers.move(list(body.modifiers).index(mod), 0)
+mod = next(m for m in body.modifiers if m.type == "ARMATURE" and m.object == rig)
 mod.use_deform_preserve_volume = True
 ```
 
 If Blender reports "Bone Heat Weighting: failed to find solution for one or more bones":
 
-- Merge by distance and remove interior faces, then retry.
+- On a copy, merge unintended duplicates and remove unwanted interior faces, then retry.
 - Or skin a voxel-remeshed copy, then transfer weights to the original with a Data Transfer
   modifier (vertex groups, nearest face interpolated) and apply it.
 - Scale the whole thing up 10x, skin, scale back down — heat weighting struggles at tiny scales.
 
-Clean the weights, with the mesh active in object mode: drop tiny weights, cap how many bones move
-one vertex (4 for game engines), and make every vertex's weights add up to 1.
+Clean only deform-bone groups, with the mesh selected and active in object mode. Preserve mask,
+cloth, modifier and corrective groups. Drop tiny weights without removing a vertex's last
+assignment, cap influences to the target engine's limit (4 in this example), and normalize deform
+weights. Resolve locked deform groups deliberately before cleanup, then verify the result:
 
 ```python
-bpy.context.view_layer.objects.active = body
-bpy.ops.object.vertex_group_clean(group_select_mode="ALL", limit=0.01)
-bpy.ops.object.vertex_group_limit_total(group_select_mode="ALL", limit=4)
-bpy.ops.object.vertex_group_normalize_all(lock_active=False)
+if bpy.context.mode != "OBJECT":
+    bpy.ops.object.mode_set(mode="OBJECT")
+bpy.ops.object.select_all(action="DESELECT")
+body.select_set(True); bpy.context.view_layer.objects.active = body
+assert body.find_armature() == rig, "Cleanup must use the intended deform rig"
+deform_names = {b.name for b in rig.data.bones if b.use_deform}
+assert not any(g.lock_weight for g in body.vertex_groups if g.name in deform_names), "Locked deform groups"
+bpy.ops.object.vertex_group_clean(group_select_mode="BONE_DEFORM", limit=0.01, keep_single=True)
+bpy.ops.object.vertex_group_limit_total(group_select_mode="BONE_DEFORM", limit=4)
+bpy.ops.object.vertex_group_normalize_all(group_select_mode="BONE_DEFORM", lock_active=False)
 ```
 
 ## Corrective shape keys
@@ -242,25 +277,60 @@ already includes a full face rig, which is better when the face must be animated
 
 ## Verify
 
-`get_scene_info(fields=["weights"], query="Body")` reports vertices no deform bone moves and deform
-bones with no vertex group — both should be zero for a skinned character. Then pose it and look:
+`get_scene_info(fields=["weights"], query="Body")` reports vertices with no positive deform-bone
+weight and deform bones with no vertex group. A fully skinned mesh should have no unweighted
+vertices. Missing groups are warnings to inspect, not an automatic failure: face, clothing or
+other meshes may use bones that Body does not. This report checks the first bound Armature
+modifier and does not check weight sums, influence limits or visible deformation.
+
+After cleanup, check positive deform weights on the mesh explicitly (4 influences in this example):
+
+```python
+deform_names = {b.name for b in rig.data.bones if b.use_deform}
+deform_indices = {g.index for g in body.vertex_groups if g.name in deform_names}
+bad = []
+for v in body.data.vertices:
+    weights = [g.weight for g in v.groups if g.group in deform_indices and g.weight > 0]
+    if not weights or len(weights) > 4 or abs(sum(weights) - 1.0) > 1e-4:
+        bad.append(v.index)
+assert not bad, f"Invalid deform weights on {len(bad)} vertices: {bad[:10]}"
+```
+
+For deliberately rigid or unskinned portions, validate their bone parenting separately and document
+the excluded vertices rather than blindly requiring weights everywhere.
+
+Before a temporary pose, save every bone's basis. Keep this snapshot across the `look` calls:
 
 ```python
 from mathutils import Matrix
+saved_pose = {pb.name: pb.matrix_basis.copy() for pb in rig.pose.bones}
 pb = rig.pose.bones["upper_arm_fk.L"]          # a Rigify control; on your own rig, the bone to bend
-pb.matrix_basis = Matrix.Rotation(1.2, 4, "X")  # works whatever the bone's rotation_mode
+pb.matrix_basis = saved_pose[pb.name] @ Matrix.Rotation(1.2, 4, "X")
+bpy.context.view_layer.update()
 ```
 
 Pose through `matrix_basis` and never change `rotation_mode` to test: Rigify controls use
 quaternions, and a bone left in another mode keys and constrains differently from its neighbours.
 
 `look(mode="angles", target=["Body"])` and check elbows, shoulders, knees and hips for collapsing
-or stretching. Reset the pose afterwards (`for pb in rig.pose.bones: pb.matrix_basis.identity()`).
+or stretching. Then restore the saved pose, including if inspection fails; do not reset all bones
+to identity. Do not key this temporary pose or change the frame while inspecting it, since
+animation evaluation can overwrite it:
 
-One pose misses most problems. For a range-of-motion test, key a few frames that bend each major
-joint to its limit (arm raised, arm forward, elbow and knee at 120°, spine twisted, a squat), then
-`look(mode="frames", frames=[...], view="three_quarter")` shows them in one strip. Delete that
-action afterwards so it doesn't ship with the rig.
+```python
+for name, basis in saved_pose.items():
+    rig.pose.bones[name].matrix_basis = basis
+bpy.context.view_layer.update()
+```
+
+One pose misses most problems. For a range-of-motion test, use a disposable copy of the rig and
+meshes with independent armature and mesh data, remapped parents, modifiers, constraints and
+driver targets. Give the copy a new test Action; detach its existing Action and NLA tracks without
+deleting shared Actions or editing the original. Key a few frames that bend each major joint to
+its limit (arm raised, arm forward, elbow and knee at 120°, spine twisted, a squat), then
+`look(mode="frames", frames=[...], view="three_quarter")` shows them in one strip. Record the
+original frame and subframe, restore them even if inspection fails, and remove only the disposable
+objects and newly created test data. Never delete the original Action to clean up a test.
 
 ## Exporting rigs to game engines
 
@@ -286,4 +356,8 @@ Export only what the engine should get: the deform skeleton and the meshes. Sele
   reparents each to its nearest exported ancestor. Check the hierarchy in the engine (one root,
   a continuous spine to the head) before animating there, and retarget to engine skeletons such as
   Unreal's mannequin in the engine (IK Retargeter), not by renaming bones in Blender.
-- Keep a vertex's weights to 4 bones (Skinning) and apply all modifiers except the Armature.
+- Use the target engine's influence limit (4 in the Skinning example). Prepare export copies and
+  bake only modifiers required by the export format, preserving the Armature and intended shape
+  keys. Topology-changing modifiers may not be directly applicable to meshes with shape keys;
+  use a workflow that preserves vertex correspondence and verify exported morph targets. Keep
+  the editable originals intact.

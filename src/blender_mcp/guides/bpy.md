@@ -50,11 +50,14 @@ Prefer `bpy.data` and object properties over `bpy.ops`: they need no context and
 
 When you need an operator:
 
-- Code runs from a timer, not a UI area. Operators that need a viewport need an override:
+- Code runs from a timer, not a UI area, so `bpy.context.screen` and `bpy.context.window` can be
+  None. Operators that need a viewport need an override built from the window manager:
   ```python
-  area = next(a for a in bpy.context.screen.areas if a.type == "VIEW_3D")
+  win = bpy.context.window_manager.windows[0]
+  area = next(a for a in win.screen.areas if a.type == "VIEW_3D")
   region = next(r for r in area.regions if r.type == "WINDOW")
-  with bpy.context.temp_override(area=area, region=region, active_object=obj, selected_objects=[obj]):
+  with bpy.context.temp_override(window=win, area=area, region=region,
+                                 active_object=obj, selected_objects=[obj]):
       bpy.ops.object.shade_smooth()
   ```
 - `mode_set` needs an active, visible, selectable object. Always return to OBJECT mode at the end
@@ -62,9 +65,28 @@ When you need an operator:
 - `obj.select_set(True)` and `bpy.context.view_layer.objects.active = obj` before ops that act on
   the selection.
 
+## Reading state correctly
+
+- Transforms update lazily. After moving, rotating, parenting or adding constraints, call
+  `bpy.context.view_layer.update()` before reading `matrix_world`, bounding boxes or world
+  positions; otherwise you read the old values.
+- `obj.data` is the mesh before modifiers. For the mesh as shown (subdivided, mirrored, deformed
+  by an armature), evaluate it, and free it afterwards:
+  ```python
+  dg = bpy.context.evaluated_depsgraph_get()
+  ev = obj.evaluated_get(dg); me = ev.to_mesh()
+  print(len(me.vertices)); ev.to_mesh_clear()
+  ```
+- For many vertices, read and write in bulk instead of looping in Python:
+  `co = [0.0] * (len(me.vertices) * 3); me.vertices.foreach_get("co", co)` (and `foreach_set`).
+  Never call an operator inside a per-object or per-vertex loop; use the data API or one operator
+  on a selection.
+
 ## Working style
 
 - Small steps. Run a chunk and `print` what you need to know.
+- Before something hard to undo (applying modifiers or transforms, joining, remeshing, deleting
+  many objects, a long script), `checkpoint(action="save")`.
 - Name everything you create; later steps and the user refer to it by name.
 - Keep the scene organized: one collection per logical group (`bpy.data.collections.new`, link
   to `scene.collection`).
@@ -72,4 +94,6 @@ When you need an operator:
   modifiers that depend on it, or export.
 - Duplicate with `obj.copy()` (shares mesh data, cheap) for repeated props; `obj.data.copy()` only
   when the copy must differ.
-- Units are metres. A door is ~2.1 m tall, a table 0.75 m, a person 1.7 m.
+- Units are metres. Size things from real-world references; unless the user names another
+  region these are Japanese (`get_guide("japanese-design")`): an interior door ~2.0 m tall, a
+  dining table 0.7 m, a person 1.6-1.7 m.

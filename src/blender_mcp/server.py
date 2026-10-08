@@ -347,6 +347,15 @@ a smaller max_size keeps long sessions cheap.
 
 Before a risky or sweeping change, checkpoint(action="save"); restore it if the result is worse.
 
+Before rigging, animation, materials, retopology, scene building and lighting, level design or
+bpy work you are unsure of, read the matching guide: get_guide(topic) (an unknown topic lists them).
+
+Unless the user names another country or region (or the setting clearly implies one), every
+real-world building, product, piece of equipment and everyday item follows Japanese
+specifications, design and standards - anything at all, not only what the guide lists. Library
+and generated assets are mostly American or European: check them. get_guide("japanese-design")
+says how to work out the Japanese version. A region the user names always wins.
+
 Objects can also come from existing libraries (search_assets, then import_asset: Poly Haven,
 Sketchfab, Poly Pizza) or be made to order (generate_3d: one new textured model from text or an
 image, 1-3 minutes, may cost the user a credit). A generation is one object, never a whole
@@ -1941,7 +1950,7 @@ async def _import_asset(ctx, source, id, asset_type, target_size, apply_to, reso
 @mcp.tool(annotations=ToolAnnotations(readOnlyHint=True))
 def get_guide(topic: str) -> str:
     """Read a workflow guide: bpy, scene, level-design, animation, rigging,
-    retopology or materials. An unknown topic returns the available guide index.
+    retopology, materials or japanese-design. An unknown topic returns the available guide index.
     """
     return guides.get(topic)
 

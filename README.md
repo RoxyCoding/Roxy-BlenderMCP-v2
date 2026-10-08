@@ -56,10 +56,6 @@ uv run --directory <this checkout> roxy-blender-mcp update
 
 `integrations/codex` holds a Codex plugin. A plugin can't know where this checkout is, so it runs `roxy-blender-mcp` from your PATH: install that first with `uv tool install --editable <this checkout>`. Alternatively, skip the plugin and let `setup` configure Codex directly.
 
-## More
-
-Upstream's original documentation, including tool details and troubleshooting, is in [README_Old.md](README_Old.md). Some of it (PyPI install, Premium, telemetry, self-update) no longer applies to this fork.
-
 ## License
 
 MIT. See [LICENSE](LICENSE).
