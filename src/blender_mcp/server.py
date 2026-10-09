@@ -162,7 +162,13 @@ class BlenderConnection:
                         break
                     
                     chunks.append(chunk)
-                    
+
+                    # A response is one JSON object, so it can only be complete
+                    # once a chunk ends in "}". Skipping the parse until then
+                    # keeps multi-megabyte images from being re-parsed per chunk.
+                    if not chunk.rstrip().endswith(b"}"):
+                        continue
+
                     # Check if we've received a complete JSON object
                     try:
                         data = b''.join(chunks)
@@ -238,7 +244,8 @@ class BlenderConnection:
 
         try:
             # Log the command being sent
-            logger.info(f"Sending command: {command_type} with params: {params}")
+            logger.info(f"Sending command: {command_type}")
+            logger.debug(f"Command params: {params}")
             
             # Send the command
             self.sock.settimeout(max(0.001, deadline - time.monotonic()))

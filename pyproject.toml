@@ -20,6 +20,9 @@ dependencies = [
 [project.scripts]
 roxy-blender-mcp = "blender_mcp.server:main"
 
+[dependency-groups]
+dev = ["pytest>=8"]
+
 [tool.pytest.ini_options]
 python_files = ["test_*.py"]
 testpaths = ["tests"]
