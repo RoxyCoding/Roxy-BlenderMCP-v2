@@ -40,12 +40,16 @@ def _load_server_class():
     source = ROOT_ADDON.read_text(encoding="utf-8")
     tree = ast.parse(source)
 
+    # start() binds through a module-level helper, so lift it along with the class.
+    helpers = {"_blendermcp_bind_listener", "_PORT_IN_USE_WINERRORS"}
     body = [
         node
         for node in tree.body
-        if isinstance(node, ast.ClassDef) and node.name == "BlenderMCPServer"
+        if (isinstance(node, ast.ClassDef) and node.name == "BlenderMCPServer")
+        or (isinstance(node, ast.FunctionDef) and node.name in helpers)
+        or (isinstance(node, ast.Assign) and any(getattr(t, "id", "") in helpers for t in node.targets))
     ]
-    assert body, "BlenderMCPServer not found in addon.py"
+    assert any(isinstance(n, ast.ClassDef) for n in body), "BlenderMCPServer not found in addon.py"
 
     main_thread = threading.current_thread()
     registered = {}
@@ -73,6 +77,8 @@ def _load_server_class():
     namespace = {
         "bpy": bpy,
         "socket": socket,
+        "sys": __import__("sys"),
+        "errno": __import__("errno"),
         "threading": threading,
         "json": json,
         "time": time,

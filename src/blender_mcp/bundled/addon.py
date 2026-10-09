@@ -7,6 +7,8 @@ import mathutils
 import json
 import threading
 import socket
+import sys
+import errno
 import queue
 import time
 import requests
@@ -32,7 +34,7 @@ from bpy.app.handlers import persistent
 bl_info = {
     "name": "Roxy Blender MCP",
     "author": "Siddharth Ahuja",
-    "version": (1, 8),
+    "version": (1, 8, 1),
     "blender": (3, 0, 0),
     "location": "View3D > Sidebar > Roxy Blender MCP",
     "description": "Connect Blender to Claude via MCP",
@@ -71,6 +73,41 @@ def _blendermcp_port_has_listener(host, port):
         return probe.connect_ex((host, port)) == 0
     finally:
         probe.close()
+
+
+_PORT_IN_USE_WINERRORS = (10013, 10048)  # WSAEACCES, WSAEADDRINUSE
+
+
+def _blendermcp_bind_listener(host, port):
+    """Create the listening socket, failing loudly when the port is taken.
+
+    On Windows SO_REUSEADDR lets a second socket bind a port that is already
+    listening, so two servers (e.g. Blender's own "MCP" extension, which also
+    defaults to 9876) would silently share it and commands could reach the
+    wrong one. SO_EXCLUSIVEADDRUSE makes the bind fail instead. Elsewhere
+    SO_REUSEADDR does not allow that and is kept for quick restarts.
+    """
+    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    try:
+        if sys.platform == "win32" and hasattr(socket, "SO_EXCLUSIVEADDRUSE"):
+            sock.setsockopt(socket.SOL_SOCKET, socket.SO_EXCLUSIVEADDRUSE, 1)
+        else:
+            sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        sock.bind((host, port))
+        # Backlog of 1 meant a reconnecting client could complete the TCP
+        # handshake and then never be accept()ed - a connection that looks
+        # established but is never serviced.
+        sock.listen(5)
+    except OSError as e:
+        sock.close()
+        if e.errno in (errno.EADDRINUSE, errno.EACCES) or getattr(e, "winerror", None) in _PORT_IN_USE_WINERRORS:
+            raise OSError(
+                errno.EADDRINUSE,
+                f"Port {port} is already in use by another program (for example Blender's own \"MCP\" "
+                "extension or another Blender). Disable it or choose a different port, then connect again.",
+            ) from e
+        raise
+    return sock
 
 
 def _blendermcp_ensure_server_running():
@@ -1108,6 +1145,7 @@ class BlenderMCPServer:
         self.port = port
         self.running = False
         self.socket = None
+        self.last_error = ""  # why the last start() failed, shown in the panel
         self.server_thread = None
         # Commands are pushed here by client threads and drained by a single
         # timer running on Blender's main thread. bpy.app.timers is not
@@ -1209,16 +1247,10 @@ class BlenderMCPServer:
             return
 
         self.running = True
+        self.last_error = ""
 
         try:
-            # Create socket
-            self.socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            self.socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-            self.socket.bind((self.host, self.port))
-            # Backlog of 1 meant a reconnecting client could complete the TCP
-            # handshake and then never be accept()ed - a connection that looks
-            # established but is never serviced.
-            self.socket.listen(5)
+            self.socket = _blendermcp_bind_listener(self.host, self.port)
             self._publish_token()
 
             # Start server thread
@@ -1235,7 +1267,8 @@ class BlenderMCPServer:
 
             print(f"BlenderMCP server started on {self.host}:{self.port}")
         except Exception as e:
-            print(f"Failed to start server: {str(e)}")
+            self.last_error = getattr(e, "strerror", None) or str(e)
+            print(f"Failed to start server: {self.last_error}")
             self.stop()
 
     def stop(self):
@@ -4620,6 +4653,9 @@ class BLENDERMCP_PT_Panel(bpy.types.Panel):
             col.operator("blendermcp.stop_server", text="Disconnect", icon='X')
         else:
             col.label(text="Not connected", icon='RADIOBUT_OFF')
+            server = getattr(bpy.types, "blendermcp_server", None)
+            if getattr(server, "last_error", ""):
+                col.label(text=f"Port {scene.blendermcp_port} is in use by another program", icon='ERROR')
             col.prop(scene, "blendermcp_port")
             col.operator("blendermcp.start_server", text="Connect to MCP server", icon='PLAY')
 
@@ -4659,8 +4695,12 @@ class BLENDERMCP_OT_StartServer(bpy.types.Operator):
             bpy.types.blendermcp_server = BlenderMCPServer(port=scene.blendermcp_port)
 
         # Start the server
-        bpy.types.blendermcp_server.start()
-        scene.blendermcp_server_running = bpy.types.blendermcp_server.running
+        server = bpy.types.blendermcp_server
+        server.start()
+        scene.blendermcp_server_running = server.running
+        if not server.running and getattr(server, "last_error", ""):
+            self.report({'ERROR'}, server.last_error)
+            return {'CANCELLED'}
 
         return {'FINISHED'}
 
