@@ -89,6 +89,27 @@ paint chipped, water streaks under a sill - which is what makes it this object's
 than a filter. Look close up in rendered mode: it should read as used, not dirty. Game export
 needs the result baked to textures (below).
 
+## Substance 3D Painter: painted wear for hero and game assets
+
+When the Roxy Substance 3D Painter MCP is connected, texture the hero asset and anything a game
+shows up close there: its wear follows baked curvature and AO, can be placed where this object is
+really touched, hit and rained on, and exports straight to Unreal's textures. `roxy.weather` stays
+the quick way for background and set dressing, and for Blender-only renders.
+
+1. Finish the model and its materials' split: one material per texture set (body, metal fittings,
+   glass...), named for what they are.
+2. `painter_handoff(action="export", name=..., target="unreal" or "blender")` unwraps each
+   material's objects into a "Painter" UV map and writes the FBX; its reply lists the Painter MCP
+   steps: create_project, bake_mesh_maps, a base material and the wear layers per texture set,
+   export_textures, save_project.
+3. In Painter, age it as the story needs (the table under "How much" below): used by default.
+   Look with frame_camera and screenshot from several sides.
+4. `painter_handoff(action="import", name=..., textures_dir=...)` rebuilds the Blender materials
+   from the exported textures. For Unreal, import the same textures there (sRGB off for normal and
+   ORM) - they replace the Blender materials, which don't transfer.
+
+Don't `roxy.weather` an asset that went through Painter: its wear is in the textures.
+
 ## Layering wear, rust, dirt and dust
 
 These helpers work on any material built of Principled BSDFs, including the ones `import_asset`

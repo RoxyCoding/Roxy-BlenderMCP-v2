@@ -840,3 +840,219 @@ return {"name": root.name, "asset": asset, "kind": kind, "file": path, "bounds_m
         "triangles": tris, "materials": materials, "sockets": [s.name for s in sockets],
         "collisions": [c.name for c in collisions], "warnings": warnings, "moving": moving_out}
 '''
+
+
+# painter_handoff(action="export"): an FBX of one asset for Substance 3D Painter. Painter needs
+# one UV map with every face in its own place inside 0-1 (the world-scale UVs roxy.uv_world_box
+# makes repeat and overlap), and it makes one texture set per material. Each material's objects
+# are unwrapped together into a "Painter" UV map, kept on the objects for the textures coming back;
+# the FBX is written from copies that carry only that map, at the origin, triangulated as a game
+# engine will triangulate them.
+PAINTER_EXPORT = r'''
+import bpy, math, os, re
+from mathutils import Matrix
+root = bpy.data.objects.get(ARGS["name"])
+if root is None:
+    return {"error": "no object called " + ARGS["name"]}
+bpy.context.view_layer.update()
+tree = [root] + list(root.children_recursive)
+meshes = [o for o in tree if o.type == "MESH" and not o.hide_render
+          and not re.match(r"^(UCX|UBX|USP|UCP)_", o.name)]
+if not meshes:
+    return {"error": root.name + " has no mesh"}
+warnings = []
+base = re.sub(r"[^A-Za-z0-9_]+", "_", root.name).strip("_") or "Asset"
+fallback = None
+for o in meshes:
+    used = {o.material_slots[p.material_index].material for p in o.data.polygons
+            if o.material_slots and p.material_index < len(o.material_slots)}
+    used.discard(None)
+    if not used:
+        if fallback is None:
+            fallback = bpy.data.materials.get(base + "_Default") or bpy.data.materials.new(base + "_Default")
+        o.data.materials.clear(); o.data.materials.append(fallback)
+        warnings.append(o.name + " had no material; it shares the texture set " + fallback.name)
+    elif len(used) > 1:
+        warnings.append(o.name + " has several materials, so its faces are split across texture sets "
+                        "and unwrapped with the first one's objects")
+groups = {}
+for o in meshes:
+    mat = next((s.material for s in o.material_slots if s.material), None)
+    groups.setdefault(mat.name, []).append(o)
+
+saved_active = bpy.context.view_layer.objects.active
+saved_selection = [o for o in bpy.context.view_layer.objects if o.select_get()]
+saved_mode = bpy.context.mode
+if saved_mode != "OBJECT":
+    bpy.ops.object.mode_set(mode="OBJECT")
+if ARGS.get("unwrap", True):
+    for mat, objs in groups.items():
+        for o in objs:
+            uv = o.data.uv_layers.get("Painter") or o.data.uv_layers.new(name="Painter")
+            o.data.uv_layers.active = uv
+            uv.active_render = True
+        for o in bpy.context.view_layer.objects:
+            o.select_set(o in objs)
+        bpy.context.view_layer.objects.active = objs[0]
+        with bpy.context.temp_override(active_object=objs[0], object=objs[0],
+                                       selected_objects=objs, selected_editable_objects=objs):
+            bpy.ops.object.mode_set(mode="EDIT")
+            bpy.ops.mesh.reveal()
+            bpy.ops.mesh.select_all(action="SELECT")
+            bpy.ops.uv.smart_project(angle_limit=math.radians(66), island_margin=ARGS.get("margin", 0.004),
+                                     area_weight=0.0, correct_aspect=True, scale_to_bounds=False)
+            bpy.ops.object.mode_set(mode="OBJECT")
+else:
+    missing = [o.name for o in meshes if "Painter" not in o.data.uv_layers]
+    if missing:
+        return {"error": "unwrap=False needs a UV map called Painter on " + ", ".join(missing)}
+
+out_dir = ARGS.get("output_dir") or (os.path.join(os.path.dirname(bpy.data.filepath), "PainterExport")
+                                     if bpy.data.filepath else os.path.join(bpy.app.tempdir or os.getcwd(), "PainterExport"))
+os.makedirs(out_dir, exist_ok=True)
+path = os.path.join(out_dir, base + ".fbx")
+dg = bpy.context.evaluated_depsgraph_get()
+to_local = root.matrix_world.inverted()
+copies, renamed = [], []
+try:
+    for o in meshes:
+        me = bpy.data.meshes.new_from_object(o.evaluated_get(dg))
+        for uv in [u for u in me.uv_layers if u.name != "Painter"]:
+            me.uv_layers.remove(uv)
+        c = bpy.data.objects.new("__painter_" + o.name, me)
+        c.matrix_world = to_local @ o.matrix_world
+        bpy.context.scene.collection.objects.link(c)
+        copies.append((c, o.name))
+    # The FBX names meshes after the objects, so the copies take the real names for the export.
+    for c, real in copies:
+        orig = bpy.data.objects[real]
+        orig.name = "__painter_orig_" + real
+        renamed.append((orig, real))
+        c.name = real
+    bpy.context.view_layer.update()
+    for o in bpy.context.view_layer.objects:
+        o.select_set(any(o is c for c, _ in copies))
+    bpy.context.view_layer.objects.active = copies[0][0]
+    bpy.ops.export_scene.fbx(filepath=path, use_selection=True, object_types={"MESH"},
+                             apply_scale_options="FBX_SCALE_NONE", mesh_smooth_type="FACE", use_tspace=True,
+                             use_triangles=True, use_mesh_modifiers=False, add_leaf_bones=False, bake_anim=False)
+finally:
+    for c, real in copies:
+        me = c.data
+        bpy.data.objects.remove(c)
+        bpy.data.meshes.remove(me)
+    for orig, real in renamed:
+        orig.name = real
+    for o in bpy.context.view_layer.objects:
+        o.select_set(o in saved_selection)
+    bpy.context.view_layer.objects.active = saved_active
+return {"name": root.name, "file": path, "dir": out_dir,
+        "texture_sets": {m: [o.name for o in objs] for m, objs in groups.items()},
+        "warnings": warnings}
+'''
+
+
+# painter_handoff(action="import"): rebuild each material under an asset from the textures
+# Painter exported for its texture set, read through the "Painter" UV map. Files are matched by
+# texture set (material) name and channel suffix, the way Painter's presets name them
+# (<mesh>_<TextureSet>_<Channel>.png); a packed OcclusionRoughnessMetallic map is split, and a
+# DirectX normal map has its green flipped.
+PAINTER_IMPORT = r'''
+import bpy, os, re
+root = bpy.data.objects.get(ARGS["name"])
+if root is None:
+    return {"error": "no object called " + ARGS["name"]}
+folder = ARGS["textures_dir"]
+if not os.path.isdir(folder):
+    return {"error": "no folder " + folder}
+CHANNELS = [("occlusionroughnessmetallic", "orm"), ("orm", "orm"), ("basecolor", "color"),
+            ("base_color", "color"), ("albedo", "color"), ("diffuse", "color"), ("roughness", "roughness"),
+            ("metallic", "metallic"), ("metalness", "metallic"), ("normal_opengl", "normal_gl"),
+            ("normal_directx", "normal_dx"), ("normal", "normal"), ("height", "height"),
+            ("emissive", "emission"), ("emission", "emission"), ("opacity", "alpha")]
+tree = [root] + list(root.children_recursive)
+mats = {}
+for o in tree:
+    if o.type == "MESH":
+        for s in o.material_slots:
+            if s.material:
+                mats.setdefault(s.material.name, s.material)
+found = {m: {} for m in mats}
+unmatched = []
+for f in sorted(os.listdir(folder)):
+    stem, ext = os.path.splitext(f)
+    if ext.lower() not in (".png", ".tga", ".jpg", ".jpeg", ".tif", ".tiff", ".exr"):
+        continue
+    low = stem.lower()
+    hit = next(((tok, kind) for tok, kind in CHANNELS if low.endswith("_" + tok)), None)
+    if hit is None:
+        unmatched.append(f); continue
+    prefix = stem[:-len(hit[0]) - 1]
+    # Painter names texture sets after the materials, with characters it can't use replaced.
+    owners = [m for m in mats for n in {m, re.sub(r"[^A-Za-z0-9_]+", "_", m)}
+              if prefix == n or prefix.endswith("_" + n)]
+    if not owners:
+        unmatched.append(f); continue
+    found[max(owners, key=len)][hit[1]] = os.path.join(folder, f)
+
+normal_format = ARGS.get("normal_format", "OpenGL")
+done = {}
+for name, files in found.items():
+    if not files:
+        continue
+    mat = mats[name]
+    nt = mat.node_tree
+    nt.nodes.clear()
+    out = nt.nodes.new("ShaderNodeOutputMaterial"); out.location = (600, 0)
+    bsdf = nt.nodes.new("ShaderNodeBsdfPrincipled"); bsdf.location = (300, 0)
+    nt.links.new(bsdf.outputs[0], out.inputs["Surface"])
+    uvn = nt.nodes.new("ShaderNodeUVMap"); uvn.uv_map = "Painter"; uvn.location = (-900, 0)
+    y = [300]
+
+    def image(path, colour):
+        t = nt.nodes.new("ShaderNodeTexImage"); t.location = (-500, y[0]); y[0] -= 280
+        t.image = bpy.data.images.load(path, check_existing=True)
+        t.image.colorspace_settings.name = "sRGB" if colour else "Non-Color"
+        nt.links.new(uvn.outputs["UV"], t.inputs["Vector"])
+        return t
+
+    if "color" in files:
+        t = image(files["color"], True); nt.links.new(t.outputs["Color"], bsdf.inputs["Base Color"])
+    if "orm" in files:
+        t = image(files["orm"], False)
+        sep = nt.nodes.new("ShaderNodeSeparateColor"); sep.location = (-200, y[0] + 280)
+        nt.links.new(t.outputs["Color"], sep.inputs["Color"])
+        nt.links.new(sep.outputs[1], bsdf.inputs["Roughness"])
+        nt.links.new(sep.outputs[2], bsdf.inputs["Metallic"])
+    for kind, socket in (("roughness", "Roughness"), ("metallic", "Metallic")):
+        if kind in files:
+            t = image(files[kind], False); nt.links.new(t.outputs["Color"], bsdf.inputs[socket])
+    nkey = next((k for k in ("normal_gl", "normal_dx", "normal") if k in files), None)
+    if nkey:
+        t = image(files[nkey], False)
+        nm = nt.nodes.new("ShaderNodeNormalMap"); nm.location = (0, -400)
+        colour = t.outputs["Color"]
+        if nkey == "normal_dx" or (nkey == "normal" and normal_format == "DirectX"):
+            sep = nt.nodes.new("ShaderNodeSeparateColor"); comb = nt.nodes.new("ShaderNodeCombineColor")
+            inv = nt.nodes.new("ShaderNodeMath"); inv.operation = "SUBTRACT"; inv.inputs[0].default_value = 1.0
+            nt.links.new(colour, sep.inputs["Color"]); nt.links.new(sep.outputs[1], inv.inputs[1])
+            nt.links.new(sep.outputs[0], comb.inputs[0]); nt.links.new(inv.outputs[0], comb.inputs[1])
+            nt.links.new(sep.outputs[2], comb.inputs[2])
+            colour = comb.outputs["Color"]
+        nt.links.new(colour, nm.inputs["Color"]); nt.links.new(nm.outputs["Normal"], bsdf.inputs["Normal"])
+    if "emission" in files:
+        t = image(files["emission"], True)
+        sock = bsdf.inputs.get("Emission Color") or bsdf.inputs.get("Emission")
+        nt.links.new(t.outputs["Color"], sock)
+        if "Emission Strength" in bsdf.inputs:
+            bsdf.inputs["Emission Strength"].default_value = 1.0
+    if "alpha" in files:
+        t = image(files["alpha"], False); nt.links.new(t.outputs["Color"], bsdf.inputs["Alpha"])
+    mat["roxy_weathered"] = "painter"
+    done[name] = sorted(files)
+for o in tree:
+    if o.type == "MESH" and "Painter" in o.data.uv_layers:
+        o.data.uv_layers["Painter"].active_render = True
+return {"name": root.name, "materials": done,
+        "without_textures": sorted(m for m, f in found.items() if not f), "unmatched": unmatched}
+'''

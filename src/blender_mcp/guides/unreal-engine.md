@@ -127,7 +127,10 @@ material, fed by exported textures.
 - **ORM:** Unreal packs ambient occlusion, roughness and metallic into one texture, R/G/B. Poly
   Haven's `arm` map is already in that order. Import ORM and normal maps with sRGB off.
 - Layered wear and dirt built in Blender with node masks (`get_guide("surface-realism")`) must be
-  baked to textures to reach Unreal, or rebuilt with Unreal's material layering.
+  baked to textures to reach Unreal, or rebuilt with Unreal's material layering. For hero and
+  close-up assets, texture in Substance 3D Painter instead: `painter_handoff(action="export",
+  target="unreal")` and the Roxy Painter MCP give BaseColor, DirectX Normal and packed ORM ready
+  for Unreal (surface-realism guide, Substance 3D Painter).
 
 ## Skeletal meshes and the Mannequin
 

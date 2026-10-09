@@ -19,7 +19,9 @@ the features that identify it and get each one right, and give every part its re
 boxes stuck together, no cylinder for a bottle or sphere for a head (get_guide("modeling"),
 steps 1 and 4). Shape features into the part they belong to (inset, extrude, cut) instead of
 stacking thin blocks on it. Nothing is factory-new by default: after materials, roxy.weather(obj)
-ages every surface over its textures ("used"; "new" only when new is the point). Before calling a scene or asset done, review it with
+ages every surface over its textures ("used"; "new" only when new is the point). When the Roxy
+Substance 3D Painter MCP is connected, hero and close-up game assets get their textures and wear
+there instead, through painter_handoff (get_guide("surface-realism")). Before calling a scene or asset done, review it with
 get_guide("quality-review"), and report what is still weak rather than claiming it is perfect.
 
 ## Region: Japanese by default

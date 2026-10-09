@@ -27,6 +27,7 @@ from .addon_manager import (
 )
 from . import ambientcg, blender_scripts, context_log, guides, session_rules
 from . import model_plan as model_plans
+from . import painter_handoff as painter
 from . import unreal_export
 from .safe_mode import safe_mode_enabled, validate_code, SandboxViolation, SAFE_MODE_ENV
 from .openai_apps import (
@@ -583,10 +584,11 @@ def missing_feature(what: str, sidebar_label: str | None = None) -> str:
     return reply
 
 
-def _run_script(script: str, args: dict) -> dict:
-    """Run one of blender_scripts' observation scripts and return its result."""
+def _run_script(script: str, args: dict, changes: bool = False) -> dict:
+    """Run one of blender_scripts' scripts and return its result. changes: it edits the scene
+    (not only observes it), so views watching the scene refresh."""
     result = get_blender_connection().send_command(
-        "execute_code", {"code": blender_scripts.build(script, args)}, read_only=True)
+        "execute_code", {"code": blender_scripts.build(script, args)}, read_only=not changes)
     # Addons before April 2025 run code but don't return what it prints.
     if not isinstance(result, dict) or "result" not in result:
         raise AddonTooOld(missing_feature("this view"))
@@ -842,6 +844,59 @@ async def export_to_unreal(
         return unreal_export.format_export(result, ue_folder.rstrip("/"))
     except Exception as e:
         return f"Error exporting to Unreal: {e}"
+
+
+PAINTER_ACTIONS = ("export", "import")
+
+
+@mcp.tool()
+async def painter_handoff(
+    ctx: Context,
+    name: str,
+    action: str = "export",
+    target: str = "blender",
+    output_dir: str | None = None,
+    textures_dir: str | None = None,
+    normal_format: str = "OpenGL",
+    unwrap: bool = True,
+) -> str:
+    """
+    Hand an asset to Substance 3D Painter (the Roxy Painter MCP) for texturing and wear, and bring
+    the textures back. Use it for hero and game assets that deserve painted wear; roxy.weather is
+    the quick procedural alternative.
+
+    - action="export": an FBX of `name` and everything under it, for Painter: one texture set per
+      material, each material's objects unwrapped together into a new "Painter" UV map (faces in
+      their own place in 0-1; the world-scale UVs overlap), triangulated, at the asset's origin.
+      The reply gives the Painter MCP steps. target: "blender" (OpenGL normals, PBR Metallic
+      Roughness) or "unreal" (DirectX normals, packed ORM). unwrap=False keeps an existing
+      "Painter" UV map.
+    - action="import": rebuild the asset's materials from the textures Painter exported to
+      textures_dir (files <mesh>_<TextureSet>_<Channel>), read through the "Painter" UV map.
+      normal_format: what the normal maps are; DirectX ones get their green flipped.
+    """
+    if action not in PAINTER_ACTIONS:
+        return f"Error: action must be one of {', '.join(PAINTER_ACTIONS)}."
+    try:
+        if action == "export":
+            if target not in ("blender", "unreal"):
+                return 'Error: target must be "blender" or "unreal".'
+            result = await asyncio.to_thread(_run_script, blender_scripts.PAINTER_EXPORT, {
+                "name": name, "output_dir": output_dir, "unwrap": unwrap}, True)
+            if result.get("error"):
+                return f"Error: {result['error']}"
+            return painter.format_export(result, target)
+        if not textures_dir:
+            return "Error: import needs textures_dir, the folder Painter exported the textures to."
+        if normal_format not in ("OpenGL", "DirectX"):
+            return 'Error: normal_format must be "OpenGL" or "DirectX".'
+        result = await asyncio.to_thread(_run_script, blender_scripts.PAINTER_IMPORT, {
+            "name": name, "textures_dir": textures_dir, "normal_format": normal_format}, True)
+        if result.get("error"):
+            return f"Error: {result['error']}"
+        return painter.format_import(result)
+    except Exception as e:
+        return f"Error with painter_handoff: {e}"
 
 
 PLAN_ACTIONS = ("check", "build", "verify")

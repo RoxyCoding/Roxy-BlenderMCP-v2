@@ -71,6 +71,10 @@ Update the checkout; clients pick up the new server the next time they start it.
 uv run --directory <this checkout> roxy-blender-mcp update
 ```
 
+## Substance 3D Painter
+
+With the [Roxy Substance 3D Painter MCP](https://github.com/RoxyCoding/Roxy-Substance-3D-Painter-MCP) connected too, an asset can be textured and worn in Painter. `painter_handoff(action="export", name=..., target="blender" or "unreal")` unwraps each material's objects into a new "Painter" UV map (one texture set per material) and writes a triangulated FBX; its reply lists the Painter MCP steps (create the project, bake mesh maps, layer the material and wear, export textures). `painter_handoff(action="import", name=..., textures_dir=...)` then rebuilds the Blender materials from the exported textures, matching `<mesh>_<TextureSet>_<Channel>` files and splitting packed ORM maps.
+
 ## Codex plugin
 
 `integrations/codex` holds a Codex plugin. A plugin can't know where this checkout is, so it runs `roxy-blender-mcp` from your PATH: install that first with `uv tool install --editable <this checkout>`. Alternatively, skip the plugin and let `setup` configure Codex directly.
