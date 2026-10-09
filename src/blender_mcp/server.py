@@ -29,6 +29,7 @@ from . import ambientcg, blender_scripts, context_log, guides, session_rules
 from . import model_plan as model_plans
 from . import painter_handoff as painter
 from . import unreal_export
+from . import uv_bake as uv_bakes
 from .safe_mode import safe_mode_enabled, validate_code, SandboxViolation, SAFE_MODE_ENV
 from .openai_apps import (
     APP_MIME_TYPE,
@@ -846,6 +847,62 @@ async def export_to_unreal(
         return f"Error exporting to Unreal: {e}"
 
 
+UV_ACTIONS = ("unwrap", "check", "bake")
+
+
+@mcp.tool()
+async def uv_bake(
+    ctx: Context,
+    name: str,
+    action: str = "unwrap",
+    resolution: int = 2048,
+    density: float | None = None,
+    margin_px: int = 8,
+    target: str = "blender",
+    output_dir: str | None = None,
+    samples: int = 32,
+) -> str:
+    """
+    UVs and baked textures for an asset (`name` and everything under it), for Painter, game
+    engines and texture baking. Run it before texturing anything that leaves Blender.
+
+    - action="unwrap": a new "Unwrap" UV map. Seams go on hard edges, and smooth or ring-shaped
+      regions are split so they open flat. Each material's objects pack together as one texture
+      set, and every island gets one texel density across the asset: density px/m, or by default
+      the largest set fills `resolution` and smaller sets get the power of two that holds the
+      same density. Margins are margin_px. Geometry Nodes output becomes real mesh first. The
+      reply includes the UV check.
+    - action="check": per texture set, faces outside 0-1, flipped faces, stretch, overlap,
+      islands closer than margin_px, and texel density by object.
+    - action="bake": bake the materials (roxy.weather wear and procedural nodes included) into
+      <name>_<TextureSet>_<Channel>.png on the Unwrap UVs, in Cycles. target "blender" gives
+      BaseColor, Roughness, Metallic and an OpenGL Normal; "unreal" gives BaseColor, a DirectX
+      Normal and packed OcclusionRoughnessMetallic. Files go to output_dir, by default a Baked
+      folder beside the .blend.
+    """
+    if action not in UV_ACTIONS:
+        return f"Error: action must be one of {', '.join(UV_ACTIONS)}."
+    if target not in ("blender", "unreal"):
+        return 'Error: target must be "blender" or "unreal".'
+    if resolution not in (256, 512, 1024, 2048, 4096, 8192):
+        return "Error: resolution must be a power of two from 256 to 8192."
+    try:
+        result = await asyncio.to_thread(_run_script, blender_scripts.UV_BAKE, {
+            "name": name, "action": action, "resolution": resolution, "density": density,
+            "margin_px": margin_px, "target": target, "output_dir": output_dir, "samples": samples}, True)
+        if result.get("old"):
+            return missing_feature("uv_bake")
+        if result.get("error"):
+            return f"Error: {result['error']}"
+        if action == "unwrap":
+            return uv_bakes.format_unwrap(name, result)
+        if action == "check":
+            return uv_bakes.format_check(name, result["checks"])
+        return uv_bakes.format_bake(name, result, target)
+    except Exception as e:
+        return f"Error with uv_bake: {e}"
+
+
 PAINTER_ACTIONS = ("export", "import")
 
 
@@ -866,13 +923,13 @@ async def painter_handoff(
     the quick procedural alternative.
 
     - action="export": an FBX of `name` and everything under it, for Painter: one texture set per
-      material, each material's objects unwrapped together into a new "Painter" UV map (faces in
-      their own place in 0-1; the world-scale UVs overlap), triangulated, at the asset's origin.
+      material, unwrapped by roxy.unwrap into an "Unwrap" UV map (seams on hard edges, one texel
+      density, a resolution per texture set), UVs checked, triangulated, at the asset's origin.
       The reply gives the Painter MCP steps. target: "blender" (OpenGL normals, PBR Metallic
       Roughness) or "unreal" (DirectX normals, packed ORM). unwrap=False keeps an existing
-      "Painter" UV map.
+      "Unwrap" UV map.
     - action="import": rebuild the asset's materials from the textures Painter exported to
-      textures_dir (files <mesh>_<TextureSet>_<Channel>), read through the "Painter" UV map.
+      textures_dir (files <mesh>_<TextureSet>_<Channel>), read through the "Unwrap" UV map.
       normal_format: what the normal maps are; DirectX ones get their green flipped.
     """
     if action not in PAINTER_ACTIONS:

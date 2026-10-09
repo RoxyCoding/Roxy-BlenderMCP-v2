@@ -40,7 +40,7 @@ bl_info = {
 }
 
 # Keep in sync with blender_mcp.addon_manager.EXPECTED_ADDON_PROTOCOL_VERSION.
-ADDON_PROTOCOL_VERSION = 24
+ADDON_PROTOCOL_VERSION = 25
 
 _scene_version = 0
 
@@ -4318,6 +4318,500 @@ def fuse(obj, parts, fillet=None):
         else:
             bevel.width = fillet; bevel.segments = max(bevel.segments, 3)
     return obj
+
+
+# --- UVs and baking ---
+
+UNWRAP = "Unwrap"
+
+
+def _asset_meshes(target):
+    """The visible meshes of an asset: target itself if it is a mesh, and everything under it."""
+    objs = target if isinstance(target, (list, tuple)) else [target] + list(target.children_recursive)
+    return [o for o in objs if o.type == "MESH" and not o.hide_render
+            and not o.name.startswith(("UCX_", "UBX_", "USP_", "UCP_"))]
+
+
+def freeze_nodes(obj):
+    """Geometry Nodes output as real mesh under obj's name, for unwrapping, painting and baking -
+    its copies would otherwise share one UV space. The procedural original stays beside it,
+    hidden, as <name>_GN; returns the new object."""
+    bpy.context.view_layer.update()
+    me = bpy.data.meshes.new_from_object(obj.evaluated_get(bpy.context.evaluated_depsgraph_get()))
+    solid = bpy.data.objects.new(obj.name + "__solid", me)
+    for coll in obj.users_collection:
+        coll.objects.link(solid)
+    solid.parent = obj.parent
+    solid.matrix_parent_inverse = obj.matrix_parent_inverse.copy()
+    solid.matrix_basis = obj.matrix_basis.copy()
+    real = obj.name
+    obj.name = real + "_GN"
+    solid.name = real
+    obj.hide_viewport = True; obj.hide_render = True
+    return solid
+
+
+def _texture_sets(objs):
+    """{material name: objects}, one texture set per material, by each object's first material."""
+    sets = {}
+    for o in objs:
+        mat = next((sl.material for sl in o.material_slots if sl.material), None)
+        sets.setdefault(mat.name if mat else o.name, []).append(o)
+    return sets
+
+
+def _uv_islands(bm, uv):
+    """Faces grouped into UV islands: faces joined by an edge whose UVs match on both sides."""
+    bm.faces.index_update()
+    parent = list(range(len(bm.faces)))
+
+    def find(i):
+        while parent[i] != i:
+            parent[i] = parent[parent[i]]
+            i = parent[i]
+        return i
+
+    for e in bm.edges:
+        if len(e.link_faces) != 2:
+            continue
+        f1, f2 = e.link_faces
+        joined = all((next(l for l in f1.loops if l.vert == v)[uv].uv -
+                      next(l for l in f2.loops if l.vert == v)[uv].uv).length < 1e-6 for v in e.verts)
+        if joined:
+            parent[find(f1.index)] = find(f2.index)
+    islands = {}
+    for f in bm.faces:
+        islands.setdefault(find(f.index), []).append(f)
+    return list(islands.values())
+
+
+def _seam_regions(bm):
+    seen, regions = set(), []
+    for f in bm.faces:
+        if f in seen:
+            continue
+        region, todo = [], [f]
+        seen.add(f)
+        while todo:
+            g = todo.pop(); region.append(g)
+            for e in g.edges:
+                if e.seam:
+                    continue
+                for h in e.link_faces:
+                    if h not in seen:
+                        seen.add(h); todo.append(h)
+        regions.append(region)
+    return regions
+
+
+def _is_disk(region):
+    """Whether a region bounded by seams opens flat: Euler characteristic 1 once its inner seams
+    are cut open (each slit edge doubles; a vertex with m slit edges splits into m)."""
+    faces = set(region)
+    verts = {v for f in region for v in f.verts}
+    edges = {e for f in region for e in f.edges}
+    slits = [e for e in edges if e.seam and len(e.link_faces) == 2 and all(g in faces for g in e.link_faces)]
+    at = {}
+    for e in slits:
+        for v in e.verts:
+            at[v] = at.get(v, 0) + 1
+    split = sum(m - 1 for m in at.values() if m > 1)
+    boundary = any(len(e.link_faces) < 2 or not all(g in faces for g in e.link_faces) for e in edges) or slits
+    return bool(boundary) and (len(verts) + split) - (len(edges) + len(slits)) + len(faces) == 1
+
+
+def _mark_seams(obj, angle):
+    """Seams where the texture can break unseen: along sharp edges first; regions that can't
+    lie flat or turn too far to open without stretching (a smooth closed shape, a tube, a box
+    with rounded edges) are split by which way their faces point; rings left are cut in two."""
+    bm = bmesh.new(); bm.from_mesh(obj.data)
+    for e in bm.edges:
+        if len(e.link_faces) == 2 and e.calc_face_angle(0.0) > angle:
+            e.seam = True
+    for region in _seam_regions(bm):
+        mean = sum((f.normal * f.calc_area() for f in region), Vector()).normalized()
+        curved = any(f.normal.dot(mean) < math.cos(math.radians(50)) for f in region)
+        if _is_disk(region) and not curved:
+            continue
+        side = {}
+        for f in region:
+            n = f.normal
+            i = max(range(3), key=lambda k: abs(n[k]))
+            side[f] = (i, n[i] > 0)
+        for f in region:
+            for e in f.edges:
+                if len(e.link_faces) == 2:
+                    a, b = e.link_faces
+                    if a in side and b in side and side[a] != side[b]:
+                        e.seam = True
+    # Still closed or ring-shaped (a frame round an inset, a band all facing one way): cut it in
+    # two across its longest extent, then the next, until it opens.
+    for _round in range(3):
+        stuck = [r for r in _seam_regions(bm) if not _is_disk(r)]
+        if not stuck:
+            break
+        for region in stuck:
+            centres = {f: f.calc_center_median() for f in region}
+            lo = [min(c[i] for c in centres.values()) for i in range(3)]
+            hi = [max(c[i] for c in centres.values()) for i in range(3)]
+            axis = sorted(range(3), key=lambda i: hi[i] - lo[i])[-1 - _round % 3]
+            mid = (lo[axis] + hi[axis]) / 2
+            for f in region:
+                for e in f.edges:
+                    if len(e.link_faces) == 2:
+                        a, b = e.link_faces
+                        if a in centres and b in centres and (centres[a][axis] < mid) != (centres[b][axis] < mid):
+                            e.seam = True
+    left = sum(1 for r in _seam_regions(bm) if not _is_disk(r))
+    bm.to_mesh(obj.data); bm.free()
+    return left
+
+
+def _pow2(px, lo=256, hi=8192):
+    size = lo
+    while size < px and size < hi:
+        size *= 2
+    return size
+
+
+def unwrap(target, uv=UNWRAP, resolution=2048, density=None, margin_px=8, angle=50):
+    """Unwrap an asset for painting, baking and game textures: seams on sharp edges (smooth or
+    closed shapes split by facing), each material's objects unwrapped together as one texture set,
+    every island scaled to one texel density across the asset, then packed into 0-1 with
+    margin_px of padding. density is pixels per metre; by default the largest texture set fills
+    `resolution`, and smaller sets get the smallest power-of-two resolution that holds the same
+    density. Geometry Nodes output is frozen to mesh first (freeze_nodes). Writes the UV map
+    `uv` (kept apart from other UV maps) and returns {"density": px/m, "sets": {material:
+    resolution}, "objects": {material: [names]}, "not_flat": regions that couldn't be opened,
+    "frozen": [...]}."""
+    frozen = []
+    objs = []
+    for o in _asset_meshes(target):
+        if any(m.type == "NODES" for m in o.modifiers):
+            o = freeze_nodes(o)
+            frozen.append(o.name)
+        objs.append(o)
+    if not objs:
+        raise ValueError("nothing to unwrap")
+    if bpy.context.mode != "OBJECT":
+        bpy.ops.object.mode_set(mode="OBJECT")
+    not_flat = 0
+    for o in objs:
+        layer = o.data.uv_layers.get(uv) or o.data.uv_layers.new(name=uv)
+        o.data.uv_layers.active = layer
+        not_flat += _mark_seams(o, math.radians(angle))
+    sets = _texture_sets(objs)
+    area = {}
+    for name, group in sets.items():
+        total = 0.0
+        for o in group:
+            k = sum(o.matrix_world.to_scale()) / 3
+            total += sum(p.area for p in o.data.polygons) * k * k
+        area[name] = max(total, 1e-8)
+    fill = 0.55       # how much of the square islands take once packed with margins
+    if density is None:
+        density = resolution * math.sqrt(fill / max(area.values()))
+    res = {name: _pow2(density * math.sqrt(a / fill), hi=max(resolution, 256)) for name, a in area.items()}
+    layer_obj = bpy.context.view_layer
+    for name, group in sets.items():
+        for o in layer_obj.objects:
+            o.select_set(o in group)
+        layer_obj.objects.active = group[0]
+        with bpy.context.temp_override(active_object=group[0], object=group[0], selected_objects=group,
+                                       selected_editable_objects=group):
+            bpy.ops.object.mode_set(mode="EDIT")
+            bpy.ops.mesh.reveal()
+            bpy.ops.mesh.select_all(action="SELECT")
+            bpy.ops.uv.unwrap(method="ANGLE_BASED", margin=0.0)
+            bpy.ops.object.mode_set(mode="OBJECT")
+        # One texel density: every island scaled to density / resolution UV units per metre.
+        per_m = density / res[name]
+        for o in group:
+            k = sum(o.matrix_world.to_scale()) / 3
+            bm = bmesh.new(); bm.from_mesh(o.data)
+            luv = bm.loops.layers.uv[uv]
+            for island in _uv_islands(bm, luv):
+                a3 = sum(f.calc_area() for f in island) * k * k
+                loops = [l for f in island for l in f.loops]
+                auv = sum(abs(_uv_area(f, luv)) for f in island)
+                if a3 <= 0 or auv <= 0:
+                    continue
+                sc = per_m * math.sqrt(a3 / auv)
+                c = sum((l[luv].uv for l in loops), Vector((0.0, 0.0))) / len(loops)
+                for l in loops:
+                    l[luv].uv = c + (l[luv].uv - c) * sc
+            bm.to_mesh(o.data); bm.free()
+        with bpy.context.temp_override(active_object=group[0], object=group[0], selected_objects=group,
+                                       selected_editable_objects=group):
+            bpy.ops.object.mode_set(mode="EDIT")
+            bpy.ops.mesh.select_all(action="SELECT")
+            bpy.ops.uv.select_all(action="SELECT")
+            bpy.ops.uv.pack_islands(rotate=True, scale=False, margin_method="FRACTION",
+                                    margin=margin_px / res[name])
+            bpy.ops.object.mode_set(mode="OBJECT")
+    if not isinstance(target, (list, tuple)):
+        import json
+        target["roxy_texture_sets"] = json.dumps({"density": round(density), "sets": res, "uv": uv})
+    return {"density": round(density), "sets": res, "objects": {n: [o.name for o in g] for n, g in sets.items()},
+            "not_flat": not_flat, "frozen": frozen}
+
+
+def _stored_sets(target, sets):
+    """The texture set resolutions unwrap stored on the asset, unless given."""
+    if sets is not None or isinstance(target, (list, tuple)) or not target.get("roxy_texture_sets"):
+        return sets
+    import json
+    return json.loads(target["roxy_texture_sets"])["sets"]
+
+
+def _uv_area(f, luv):
+    pts = [l[luv].uv for l in f.loops]
+    return 0.5 * sum(pts[i - 1].x * pts[i].y - pts[i].x * pts[i - 1].y for i in range(len(pts)))
+
+
+def check_uvs(target, uv=UNWRAP, resolution=2048, margin_px=8, sets=None):
+    """Measure an asset's UVs per texture set: faces outside 0-1, flipped faces, stretch (share
+    of the surface whose texel density is off the median by more than 1.5x), overlapping and
+    too-close islands (sampled on a grid; closer than margin_px at the set's resolution), and
+    the texel density (px/m) with its spread between objects. sets maps texture set to its
+    resolution (default: what unwrap stored on the asset). Returns {set: {...}}; "problems" lists what to fix."""
+    import numpy as np
+    objs = _asset_meshes(target)
+    sets = _stored_sets(target, sets)
+    out = {}
+    for name, group in _texture_sets(objs).items():
+        size = (sets or {}).get(name, resolution)
+        grid_n = 512
+        grid = np.full((grid_n, grid_n), -1, dtype=np.int64)
+        overlap = np.zeros((grid_n, grid_n), dtype=bool)
+        ratios, areas, outside, flipped, total, island_id = [], [], 0, 0, 0, 0
+        per_object, missing = {}, []
+        for o in group:
+            if uv not in o.data.uv_layers:
+                missing.append(o.name)
+                continue
+            k = sum(o.matrix_world.to_scale()) / 3
+            bm = bmesh.new(); bm.from_mesh(o.data); bm.faces.ensure_lookup_table()
+            bmesh.ops.triangulate(bm, faces=bm.faces)
+            luv = bm.loops.layers.uv[uv]
+            obj_r = []
+            for island in _uv_islands(bm, luv):
+                for f in island:
+                    total += 1
+                    a3 = f.calc_area() * k * k
+                    auv = _uv_area(f, luv)
+                    if auv < 0:
+                        flipped += 1
+                    pts = [l[luv].uv for l in f.loops]
+                    if any(not (-1e-4 <= c <= 1 + 1e-4) for p in pts for c in p):
+                        outside += 1
+                    if a3 > 1e-12 and abs(auv) > 1e-14:
+                        r = math.sqrt(abs(auv) / a3) * size
+                        ratios.append(r); areas.append(a3); obj_r.append(r)
+                    # Rasterise by cell centres: a centre inside two islands is an overlap.
+                    xs = [p.x * grid_n for p in pts]; ys = [p.y * grid_n for p in pts]
+                    x0, x1 = max(0, int(min(xs))), min(grid_n - 1, int(max(xs)))
+                    y0, y1 = max(0, int(min(ys))), min(grid_n - 1, int(max(ys)))
+                    (ax, ay), (bx, by), (cx, cy) = zip(xs, ys)
+                    d = (by - cy) * (ax - cx) + (cx - bx) * (ay - cy)
+                    if abs(d) < 1e-12:
+                        continue
+                    for gx in range(x0, x1 + 1):
+                        px = gx + 0.5
+                        for gy in range(y0, y1 + 1):
+                            py = gy + 0.5
+                            w1 = ((by - cy) * (px - cx) + (cx - bx) * (py - cy)) / d
+                            w2 = ((cy - ay) * (px - cx) + (ax - cx) * (py - cy)) / d
+                            if w1 >= 0 and w2 >= 0 and w1 + w2 <= 1:
+                                cur = grid[gy, gx]
+                                if cur >= 0 and cur != island_id:
+                                    overlap[gy, gx] = True
+                                grid[gy, gx] = island_id
+                island_id += 1
+            bm.free()
+            if obj_r:
+                per_object[o.name] = round(sorted(obj_r)[len(obj_r) // 2])
+        result = {"resolution": size, "faces": total, "missing_uv": missing}
+        if ratios:
+            order = sorted(range(len(ratios)), key=lambda i: ratios[i])
+            half, acc, median = sum(areas) / 2, 0.0, ratios[order[-1]]
+            for i in order:
+                acc += areas[i]
+                if acc >= half:
+                    median = ratios[i]; break
+            off = sum(a for r, a in zip(ratios, areas) if r > median * 1.5 or r < median / 1.5)
+            result.update(density=round(median), stretched=round(100 * off / sum(areas), 1))
+            if per_object:
+                result["density_by_object"] = per_object
+        covered = grid >= 0
+        k = max(1, math.ceil(margin_px * grid_n / size))
+        close = np.zeros_like(covered)
+        for dx in range(-k, k + 1):
+            for dy in range(-k, k + 1):
+                if dx == 0 and dy == 0:
+                    continue
+                shifted = np.full_like(grid, -1)
+                xs = slice(max(dx, 0), grid_n + min(dx, 0)); xd = slice(max(-dx, 0), grid_n + min(-dx, 0))
+                ys = slice(max(dy, 0), grid_n + min(dy, 0)); yd = slice(max(-dy, 0), grid_n + min(-dy, 0))
+                shifted[yd, xd] = grid[ys, xs]
+                close |= covered & (shifted >= 0) & (shifted != grid)
+        result.update(outside=round(100 * outside / max(total, 1), 1), flipped=flipped,
+                      overlap=round(100 * overlap.sum() / max(covered.sum(), 1), 1),
+                      too_close=round(100 * close.sum() / max(covered.sum(), 1), 1),
+                      used=round(100 * covered.sum() / grid.size, 1))
+        problems = []
+        if missing:
+            problems.append(f"no {uv} UV map on " + ", ".join(missing))
+        if result["outside"]:
+            problems.append(f"{result['outside']}% of faces outside 0-1")
+        if flipped:
+            problems.append(f"{flipped} flipped faces")
+        if result.get("stretched", 0) > 5:
+            problems.append(f"{result['stretched']}% of the surface stretched or squashed (density off by 1.5x+)")
+        if result["overlap"] > 0.5:
+            problems.append(f"{result['overlap']}% of the used area overlaps another island")
+        if result["too_close"] > 2:
+            problems.append(f"{result['too_close']}% of the used area is closer than {margin_px} px to another island")
+        if per_object and max(per_object.values()) > 1.5 * min(per_object.values()):
+            problems.append("texel density differs between objects by more than 1.5x")
+        result["problems"] = problems
+        out[name] = result
+    return out
+
+
+def _bsdfs(mat):
+    return [n for n in mat.node_tree.nodes if n.type == "BSDF_PRINCIPLED"] if mat and mat.node_tree else []
+
+
+def _bake(group, kind, image, uv, margin_px, **kw):
+    for o in bpy.context.view_layer.objects:
+        o.select_set(o in group)
+    bpy.context.view_layer.objects.active = group[0]
+    nodes = []
+    for o in group:
+        for sl in o.material_slots:
+            if sl.material and sl.material.node_tree:
+                nt = sl.material.node_tree
+                node = nt.nodes.new("ShaderNodeTexImage"); node.image = image; node.name = "__roxy_bake"
+                nt.nodes.active = node; nodes.append((nt, node))
+    try:
+        with bpy.context.temp_override(active_object=group[0], object=group[0], selected_objects=group,
+                                       selected_editable_objects=group):
+            bpy.ops.object.bake(type=kind, uv_layer=uv, margin=margin_px, use_clear=True, **kw)
+    finally:
+        for nt, node in nodes:
+            nt.nodes.remove(node)
+
+
+def _swap_to_emission(mats, socket):
+    """Route every Principled BSDF's `socket` into an emission in its place, so it can be baked
+    as EMIT; returns how to put the materials back."""
+    undo = []
+    for mat in mats:
+        nt = mat.node_tree
+        for b in _bsdfs(mat):
+            em = nt.nodes.new("ShaderNodeEmission")
+            src = b.inputs[socket]
+            if src.is_linked:
+                nt.links.new(src.links[0].from_socket, em.inputs["Color"])
+            else:
+                v = src.default_value
+                em.inputs["Color"].default_value = (v, v, v, 1.0) if isinstance(v, float) else tuple(v)
+            moved = [(l.to_socket) for l in b.outputs[0].links]
+            for to in moved:
+                nt.links.new(em.outputs[0], to)
+            undo.append((nt, b, em, moved))
+    def restore():
+        for nt, b, em, moved in undo:
+            for to in moved:
+                nt.links.new(b.outputs[0], to)
+            nt.nodes.remove(em)
+    return restore
+
+
+def bake_textures(target, output_dir, name=None, uv=UNWRAP, sets=None, resolution=2048, target_engine="blender",
+                  samples=32, margin_px=8):
+    """Bake an asset's materials - roxy.weather wear, procedural nodes and image textures alike -
+    into textures on its unwrapped UVs, one set per material (roxy.unwrap first), for game engines
+    and Painter. Writes <name>_<TextureSet>_<Channel>.png: BaseColor, Roughness, Metallic and
+    Normal for target_engine "blender" (OpenGL normals); BaseColor, Normal (DirectX) and
+    OcclusionRoughnessMetallic for "unreal". sets maps texture set to resolution (default: what
+    unwrap stored on the asset).
+    Bakes in Cycles; returns {set: {channel: path}}."""
+    import os
+    import numpy as np
+    scene = bpy.context.scene
+    objs = _asset_meshes(target)
+    sets = _stored_sets(target, sets)
+    name = name or (target.name if not isinstance(target, (list, tuple)) else objs[0].name)
+    os.makedirs(output_dir, exist_ok=True)
+    saved = (scene.render.engine, scene.cycles.samples, scene.cycles.device)
+    scene.render.engine = "CYCLES"; scene.cycles.samples = samples; scene.cycles.device = "CPU"
+    out = {}
+    try:
+        for tset, group in _texture_sets(objs).items():
+            missing = [o.name for o in group if uv not in o.data.uv_layers]
+            if missing:
+                raise ValueError(f"no {uv} UV map on {', '.join(missing)}: run roxy.unwrap first")
+            size = (sets or {}).get(tset, resolution)
+            mats = list({sl.material for o in group for sl in o.material_slots if sl.material})
+            safe = "".join(c if c.isalnum() or c == "_" else "_" for c in tset)
+            files = {}
+
+            def image(channel, colour):
+                img = bpy.data.images.new(f"{name}_{safe}_{channel}", size, size, alpha=False, float_buffer=False)
+                img.colorspace_settings.name = "sRGB" if colour else "Non-Color"
+                return img
+
+            def save(img, channel):
+                path = os.path.join(output_dir, f"{name}_{safe}_{channel}.png")
+                img.filepath_raw = path; img.file_format = "PNG"; img.save()
+                files[channel] = path
+                return path
+
+            # Base colour and metallic go through an emission: a diffuse bake reads metal as black.
+            color = image("BaseColor", True)
+            restore = _swap_to_emission(mats, "Base Color")
+            try:
+                _bake(group, "EMIT", color, uv, margin_px)
+            finally:
+                restore()
+            save(color, "BaseColor")
+            rough = image("Roughness", False)
+            _bake(group, "ROUGHNESS", rough, uv, margin_px)
+            metal = image("Metallic", False)
+            restore = _swap_to_emission(mats, "Metallic")
+            try:
+                _bake(group, "EMIT", metal, uv, margin_px)
+            finally:
+                restore()
+            normal = image("Normal", False)
+            if any(b.inputs["Normal"].is_linked for m in mats for b in _bsdfs(m)):
+                _bake(group, "NORMAL", normal, uv, margin_px, normal_space="TANGENT")
+            else:
+                normal.pixels.foreach_set(np.tile(np.array([0.5, 0.5, 1.0, 1.0], dtype=np.float32), size * size))
+            if target_engine == "unreal":
+                px = np.empty(size * size * 4, dtype=np.float32)
+                normal.pixels.foreach_get(px); px[1::4] = 1.0 - px[1::4]; normal.pixels.foreach_set(px)
+                save(normal, "Normal")
+                ao = image("AO", False)
+                _bake(group, "AO", ao, uv, margin_px)
+                orm = image("OcclusionRoughnessMetallic", False)
+                packed = np.empty_like(px)
+                for img, ch in ((ao, 0), (rough, 1), (metal, 2)):
+                    img.pixels.foreach_get(px); packed[ch::4] = px[0::4]
+                packed[3::4] = 1.0
+                orm.pixels.foreach_set(packed)
+                save(orm, "OcclusionRoughnessMetallic")
+                bpy.data.images.remove(ao); bpy.data.images.remove(orm)
+            else:
+                save(normal, "Normal"); save(rough, "Roughness"); save(metal, "Metallic")
+            for img in (color, rough, metal, normal):
+                bpy.data.images.remove(img)
+            out[tset] = files
+    finally:
+        scene.render.engine, scene.cycles.samples, scene.cycles.device = saved
+    return out
 
 
 # --- surface-realism ---

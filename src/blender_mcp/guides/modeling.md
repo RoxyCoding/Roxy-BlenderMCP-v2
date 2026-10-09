@@ -209,7 +209,9 @@ only through its empty.
 
 ### 8. Surface, age, light, review
 
-UVs (`roxy.uv_world_box` for hard-surface and architecture), materials (`get_guide("materials")`,
+UVs: `roxy.uv_world_box` for tiling materials rendered in Blender, and for anything that leaves
+Blender or gets painted or baked textures, `uv_bake(action="unwrap")` then `action="check"`
+(`get_guide("retopology")`, UVs). Materials (`get_guide("materials")`,
 `get_guide("surface-realism")`), then age them: nothing in use is new, so every part gets
 `roxy.weather(obj)` ("used" by default, over its textures; "new" only when new is the point).
 Then `get_guide("quality-review")`.
@@ -220,7 +222,7 @@ Tested on Blender 5.1. They build mesh data directly (no viewport or mode switch
 scale at 1, and put the origin at the bottom centre so `location` is where the part stands.
 Most parts get `roxy.finish()`: a small angle-limited bevel and weighted normals.
 
-The addon provides these as `roxy.<name>` inside execute_blender_code (addon protocol 18+), so call them directly - don't paste or redefine them. If `roxy` is undefined, the Blender addon is outdated: get_addon_status says how to update it. `roxy.rounded_box`, `roxy.rounded_cylinder`, `roxy.loft`, `roxy.fuse`, `roxy.inset`, `roxy.extrude`, `roxy.set_pivot`, `roxy.carry` and `roxy.limit_motion` need protocol 23, `roxy.repeat` 24.
+The addon provides these as `roxy.<name>` inside execute_blender_code (addon protocol 18+), so call them directly - don't paste or redefine them. If `roxy` is undefined, the Blender addon is outdated: get_addon_status says how to update it. `roxy.rounded_box`, `roxy.rounded_cylinder`, `roxy.loft`, `roxy.fuse`, `roxy.inset`, `roxy.extrude`, `roxy.set_pivot`, `roxy.carry` and `roxy.limit_motion` need protocol 23, `roxy.repeat` 24, `roxy.unwrap`, `roxy.check_uvs`, `roxy.bake_textures` and `roxy.freeze_nodes` 25.
 
 - `roxy.finish(obj, bevel=0.002, segments=2)` - Rounded edges that catch highlights, with clean shading.
 - `roxy.box(name, size, location=(0, 0, 0), bevel=0.002, parent=None, collection=None, origin='bottom')` - A box of real size (x, y, z metres) with scale 1.
@@ -237,6 +239,10 @@ The addon provides these as `roxy.<name>` inside execute_blender_code (addon pro
 - `roxy.set_pivot(obj, pivot)` - Move obj's origin to pivot (metres, in its parent's space) without moving its mesh: the hinge a door, lid or flap turns on.
 - `roxy.carry(holder, obj)` - Parent obj to holder where it stands, so it moves with it: a handle on its door, a knob on its drawer.
 - `roxy.limit_motion(obj, moves)` - Limit Rotation or Location constraints that keep a moving part in its plan range while you animate it.
+- `roxy.unwrap(target, uv='Unwrap', resolution=2048, density=None, margin_px=8, angle=50)` - Unique UVs for an asset (an object and everything under it): seams on hard edges, smooth and ring regions split until they open flat, one texture set per material, one texel density across the asset, packed with margins. Returns the density and each set's resolution.
+- `roxy.check_uvs(target, uv='Unwrap', resolution=2048, margin_px=8, sets=None)` - Per texture set: faces outside 0-1, flipped faces, stretch, overlap, islands too close, texel density by object, and the problems to fix.
+- `roxy.bake_textures(target, output_dir, name=None, uv='Unwrap', sets=None, resolution=2048, target_engine='blender', samples=32, margin_px=8)` - Bake the materials (weathering included) into <name>_<TextureSet>_<Channel>.png on the Unwrap UVs.
+- `roxy.freeze_nodes(obj)` - Geometry Nodes output as real mesh under the object's name, the procedural original hidden as <name>_GN.
 - `roxy.uv_world_box(obj, space='world')` - UVs in metres, projected per face along its main axis: a texture with Mapping Scale 1/size tiles at real size on every object built this way, whatever its dimensions.
 - `roxy.assemble(name, parts, location=(0, 0, 0), collection=None)` - Group parts under an empty, so the whole object moves, rotates and exports as one.
 - `roxy.panel_with_openings(name, size, openings, location=(0, 0, 0), bevel=0.002, parent=None, collection=None)` - A board or wall (width x, thickness y, height z) with rectangular openings, each (x_centre, z_bottom, width, height) in metres from the panel's bottom centre: walls with doors and windows, doors with glazing, appliance fronts, furniture sides, signs.

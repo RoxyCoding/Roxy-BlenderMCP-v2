@@ -84,13 +84,25 @@ distance it will be seen at.
 
 ## UVs
 
-```python
-# in edit mode with everything selected, via a 3D viewport override
-bpy.ops.uv.smart_project(angle_limit=1.15, island_margin=0.02)
-```
+Hard-surface props, furniture, buildings and anything modelled with the roxy helpers:
+`uv_bake(action="unwrap", name=...)` (or `roxy.unwrap` in a script). It puts seams on hard edges,
+splits smooth and ring-shaped regions so they open flat, packs each material's objects as one
+texture set, and gives every island one texel density across the asset - the largest set fills
+the resolution, smaller sets get the power of two that holds the same density. Then
+`uv_bake(action="check")` until it reports no problems: nothing outside 0-1, nothing flipped,
+under 5% stretch, no overlap, islands at least the margin apart (8 px; 16 px for 4k textures).
 
-For characters mark seams along hidden edges first (`edge.seam = True` in bmesh), then
-`bpy.ops.uv.unwrap()`.
+Texel density to aim for, for a first-person game: about 512 px/m for props and buildings seen
+up close, 1024 px/m for hero props and what the player holds, 256 px/m for distant scenery.
+Keep it the same across neighbours (`density=`), or the sharper one gives the other away.
+
+Characters and organic shapes need seams placed by hand along hidden lines (inside the arms and
+legs, under the hair line, round the soles): mark them in bmesh (`edge.seam = True`), then
+`bpy.ops.uv.unwrap(method="ANGLE_BASED")` in edit mode, and check with `roxy.check_uvs(obj)`.
+
+`roxy.uv_world_box` is a different thing: tiling UVs in metres for materials that repeat
+(plaster, flooring, wood), rendered in Blender. Keep it for that; textures painted or baked for
+the object need the unique "Unwrap" map.
 
 ## Bake detail back
 

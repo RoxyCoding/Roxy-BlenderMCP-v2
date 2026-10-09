@@ -846,10 +846,9 @@ return {"name": root.name, "asset": asset, "kind": kind, "file": path, "bounds_m
 
 # painter_handoff(action="export"): an FBX of one asset for Substance 3D Painter. Painter needs
 # one UV map with every face in its own place inside 0-1 (the world-scale UVs roxy.uv_world_box
-# makes repeat and overlap), and it makes one texture set per material. Each material's objects
-# are unwrapped together into a "Painter" UV map, kept on the objects for the textures coming back;
-# the FBX is written from copies that carry only that map, at the origin, triangulated as a game
-# engine will triangulate them.
+# makes repeat and overlap), and it makes one texture set per material. roxy.unwrap writes that
+# map ("Unwrap"), kept on the objects for the textures coming back; the FBX is written from
+# copies that carry only that map, at the origin, triangulated as a game engine will.
 PAINTER_EXPORT = r'''
 import bpy, math, os, re
 from mathutils import Matrix
@@ -864,28 +863,6 @@ if not meshes:
     return {"error": root.name + " has no mesh"}
 warnings = []
 base = re.sub(r"[^A-Za-z0-9_]+", "_", root.name).strip("_") or "Asset"
-# Geometry Nodes output has no faces of its own to unwrap, and its copies would share one UV
-# space: for painting, each such object becomes real mesh under its name, and the procedural
-# version stays beside it, hidden, as <name>_GN.
-dg = bpy.context.evaluated_depsgraph_get()
-for i, o in enumerate(list(meshes)):
-    if not any(m.type == "NODES" for m in o.modifiers):
-        continue
-    me = bpy.data.meshes.new_from_object(o.evaluated_get(dg))
-    solid = bpy.data.objects.new(o.name + "__solid", me)
-    for coll in o.users_collection:
-        coll.objects.link(solid)
-    solid.parent = o.parent
-    solid.matrix_parent_inverse = o.matrix_parent_inverse.copy()
-    solid.matrix_basis = o.matrix_basis.copy()
-    real = o.name
-    o.name = real + "_GN"
-    solid.name = real
-    o.hide_viewport = True; o.hide_render = True
-    meshes[i] = solid
-    warnings.append(real + " is Geometry Nodes output: it is now real mesh for painting; the editable "
-                    "version is hidden as " + o.name + " (rebuild and export again after changing it)")
-tree = [root] + list(root.children_recursive)
 fallback = None
 for o in meshes:
     used = {o.material_slots[p.material_index].material for p in o.data.polygons
@@ -899,37 +876,36 @@ for o in meshes:
     elif len(used) > 1:
         warnings.append(o.name + " has several materials, so its faces are split across texture sets "
                         "and unwrapped with the first one's objects")
+
+saved_active = bpy.context.view_layer.objects.active
+saved_selection = [o for o in bpy.context.view_layer.objects if o.select_get()]
+if bpy.context.mode != "OBJECT":
+    bpy.ops.object.mode_set(mode="OBJECT")
+if ARGS.get("unwrap", True):
+    # roxy.unwrap: seams, one texel density across the asset, a resolution per texture set;
+    # Geometry Nodes output becomes real mesh first (its copies would share one UV space).
+    info = roxy.unwrap(root, resolution=ARGS.get("resolution", 2048))
+    for name in info["frozen"]:
+        warnings.append(name + " is Geometry Nodes output: it is now real mesh for painting; the editable "
+                        "version is hidden as " + name + "_GN (rebuild and export again after changing it)")
+    if info["not_flat"]:
+        warnings.append(f"{info['not_flat']} UV regions could not be opened flat; check_uvs shows the stretch")
+    meshes = [o for o in [root] + list(root.children_recursive) if o.type == "MESH" and not o.hide_render
+              and not re.match(r"^(UCX|UBX|USP|UCP)_", o.name)]
+else:
+    import json
+    info = json.loads(root["roxy_texture_sets"]) if root.get("roxy_texture_sets") else {"density": None, "sets": {}}
+    missing = [o.name for o in meshes if "Unwrap" not in o.data.uv_layers]
+    if missing:
+        return {"error": "unwrap=False needs a UV map called Unwrap on " + ", ".join(missing)}
 groups = {}
 for o in meshes:
     mat = next((s.material for s in o.material_slots if s.material), None)
     groups.setdefault(mat.name, []).append(o)
-
-saved_active = bpy.context.view_layer.objects.active
-saved_selection = [o for o in bpy.context.view_layer.objects if o.select_get()]
-saved_mode = bpy.context.mode
-if saved_mode != "OBJECT":
-    bpy.ops.object.mode_set(mode="OBJECT")
-if ARGS.get("unwrap", True):
-    for mat, objs in groups.items():
-        for o in objs:
-            uv = o.data.uv_layers.get("Painter") or o.data.uv_layers.new(name="Painter")
-            o.data.uv_layers.active = uv
-            uv.active_render = True
-        for o in bpy.context.view_layer.objects:
-            o.select_set(o in objs)
-        bpy.context.view_layer.objects.active = objs[0]
-        with bpy.context.temp_override(active_object=objs[0], object=objs[0],
-                                       selected_objects=objs, selected_editable_objects=objs):
-            bpy.ops.object.mode_set(mode="EDIT")
-            bpy.ops.mesh.reveal()
-            bpy.ops.mesh.select_all(action="SELECT")
-            bpy.ops.uv.smart_project(angle_limit=math.radians(66), island_margin=ARGS.get("margin", 0.004),
-                                     area_weight=0.0, correct_aspect=True, scale_to_bounds=False)
-            bpy.ops.object.mode_set(mode="OBJECT")
-else:
-    missing = [o.name for o in meshes if "Painter" not in o.data.uv_layers]
-    if missing:
-        return {"error": "unwrap=False needs a UV map called Painter on " + ", ".join(missing)}
+checks = roxy.check_uvs(root, sets=info["sets"] or None)
+for tset, c in checks.items():
+    for problem in c["problems"]:
+        warnings.append(f"UVs of {tset}: {problem}")
 
 out_dir = ARGS.get("output_dir") or (os.path.join(os.path.dirname(bpy.data.filepath), "PainterExport")
                                      if bpy.data.filepath else os.path.join(bpy.app.tempdir or os.getcwd(), "PainterExport"))
@@ -941,7 +917,7 @@ copies, renamed = [], []
 try:
     for o in meshes:
         me = bpy.data.meshes.new_from_object(o.evaluated_get(dg))
-        for uv in [u for u in me.uv_layers if u.name != "Painter"]:
+        for uv in [u for u in me.uv_layers if u.name != "Unwrap"]:
             me.uv_layers.remove(uv)
         c = bpy.data.objects.new("__painter_" + o.name, me)
         c.matrix_world = to_local @ o.matrix_world
@@ -972,13 +948,14 @@ finally:
     bpy.context.view_layer.objects.active = saved_active
 return {"name": root.name, "file": path, "dir": out_dir,
         "texture_sets": {m: [o.name for o in objs] for m, objs in groups.items()},
-        "warnings": warnings}
+        "resolutions": info["sets"], "density": info["density"], "warnings": warnings}
 '''
 
 
 # painter_handoff(action="import"): rebuild each material under an asset from the textures
-# Painter exported for its texture set, read through the "Painter" UV map. Files are matched by
-# texture set (material) name and channel suffix, the way Painter's presets name them
+# Painter exported for its texture set, read through the "Unwrap" UV map. Files are matched by
+# texture set (material) name and channel suffix, the way Painter's presets and roxy.bake_textures
+# name them
 # (<mesh>_<TextureSet>_<Channel>.png); a packed OcclusionRoughnessMetallic map is split, and a
 # DirectX normal map has its green flipped.
 PAINTER_IMPORT = r'''
@@ -1030,7 +1007,7 @@ for name, files in found.items():
     out = nt.nodes.new("ShaderNodeOutputMaterial"); out.location = (600, 0)
     bsdf = nt.nodes.new("ShaderNodeBsdfPrincipled"); bsdf.location = (300, 0)
     nt.links.new(bsdf.outputs[0], out.inputs["Surface"])
-    uvn = nt.nodes.new("ShaderNodeUVMap"); uvn.uv_map = "Painter"; uvn.location = (-900, 0)
+    uvn = nt.nodes.new("ShaderNodeUVMap"); uvn.uv_map = "Unwrap"; uvn.location = (-900, 0)
     y = [300]
 
     def image(path, colour):
@@ -1075,8 +1052,34 @@ for name, files in found.items():
     mat["roxy_weathered"] = "painter"
     done[name] = sorted(files)
 for o in tree:
-    if o.type == "MESH" and "Painter" in o.data.uv_layers:
-        o.data.uv_layers["Painter"].active_render = True
+    if o.type == "MESH" and "Unwrap" in o.data.uv_layers:
+        o.data.uv_layers["Unwrap"].active_render = True
 return {"name": root.name, "materials": done,
         "without_textures": sorted(m for m, f in found.items() if not f), "unmatched": unmatched}
+'''
+
+
+# uv_bake: unwrap an asset for textures (roxy.unwrap), measure its UVs (roxy.check_uvs), or bake
+# its materials into textures on them (roxy.bake_textures). The helpers live in the addon (protocol
+# 25); this only finds the asset and reports.
+UV_BAKE = r'''
+import bpy, os, re
+root = bpy.data.objects.get(ARGS["name"])
+if root is None:
+    return {"error": "no object called " + ARGS["name"]}
+if not hasattr(roxy, "unwrap"):
+    return {"error": "old addon", "old": True}
+action, margin = ARGS["action"], ARGS.get("margin_px", 8)
+if action == "unwrap":
+    info = roxy.unwrap(root, resolution=ARGS.get("resolution", 2048), density=ARGS.get("density"), margin_px=margin)
+    info["checks"] = roxy.check_uvs(root, margin_px=margin)
+    return info
+if action == "check":
+    return {"checks": roxy.check_uvs(root, resolution=ARGS.get("resolution", 2048), margin_px=margin)}
+out = ARGS.get("output_dir") or os.path.join(os.path.dirname(bpy.data.filepath) if bpy.data.filepath
+                                              else (bpy.app.tempdir or os.getcwd()), "Baked")
+base = re.sub(r"[^A-Za-z0-9_]+", "_", root.name).strip("_") or "Asset"
+files = roxy.bake_textures(root, out, name=base, target_engine=ARGS.get("target", "blender"),
+                           samples=ARGS.get("samples", 32), margin_px=margin)
+return {"files": files, "dir": out}
 '''

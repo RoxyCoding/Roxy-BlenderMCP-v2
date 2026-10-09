@@ -73,7 +73,11 @@ uv run --directory <this checkout> roxy-blender-mcp update
 
 ## Substance 3D Painter
 
-With the [Roxy Substance 3D Painter MCP](https://github.com/RoxyCoding/Roxy-Substance-3D-Painter-MCP) connected too, an asset can be textured and worn in Painter. `painter_handoff(action="export", name=..., target="blender" or "unreal")` unwraps each material's objects into a new "Painter" UV map (one texture set per material) and writes a triangulated FBX; its reply lists the Painter MCP steps (create the project, bake mesh maps, layer the material and wear, export textures). `painter_handoff(action="import", name=..., textures_dir=...)` then rebuilds the Blender materials from the exported textures, matching `<mesh>_<TextureSet>_<Channel>` files and splitting packed ORM maps.
+With the [Roxy Substance 3D Painter MCP](https://github.com/RoxyCoding/Roxy-Substance-3D-Painter-MCP) connected too, an asset can be textured and worn in Painter. `painter_handoff(action="export", name=..., target="blender" or "unreal")` unwraps the asset into an "Unwrap" UV map with `roxy.unwrap` (one texture set per material, one texel density) and writes a triangulated FBX; its reply lists the Painter MCP steps (create the project, bake mesh maps, layer the material and wear, export textures). `painter_handoff(action="import", name=..., textures_dir=...)` then rebuilds the Blender materials from the exported textures, matching `<mesh>_<TextureSet>_<Channel>` files and splitting packed ORM maps.
+
+## UVs and baking
+
+`uv_bake(action="unwrap", name=...)` gives an asset unique UVs for textures that leave Blender: seams on hard edges, one texture set per material, one texel density across the asset and a resolution per texture set. `action="check"` measures stretch, overlap, margins and density; `action="bake"` bakes the materials, procedural wear included, into BaseColor, Normal and Roughness/Metallic textures, or packed ORM and DirectX normals for Unreal.
 
 ## Codex plugin
 

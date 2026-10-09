@@ -1,6 +1,6 @@
 """painter_handoff: Blender -> Substance 3D Painter (through the Roxy Painter MCP) -> back.
 
-Painter wants one UV map with every face in its own place, makes a texture set per material,
+Painter wants one UV map with every face in its own place (roxy.unwrap), makes a texture set per material,
 and exports textures named <mesh>_<TextureSet>_<Channel>. The Blender side writes that mesh
 and reads those textures back; the replies say what to run on the Painter MCP in between.
 """
@@ -15,17 +15,23 @@ def format_export(result: dict, target: str) -> str:
     lines = [
         f"Exported {result['name']} for Painter: {result['file']}",
         "Texture sets (one per material): " + "; ".join(f"{m} ({', '.join(objs)})" for m, objs in sets.items()),
-        "Each object has a new UV map \"Painter\" (every face in its own place in 0-1); the FBX carries only "
-        "that map, triangulated, at the asset's origin.",
+        "Each object has a UV map \"Unwrap\" (seams on hard edges, every face in its own place in 0-1, one "
+        "texel density across the asset); the FBX carries only that map, triangulated, at the asset's origin.",
     ]
+    res = result.get("resolutions") or {}
+    if res:
+        lines.append(f"Texel density {result.get('density')} px/m; resolution per texture set: "
+                     + ", ".join(f"{m} {r}" for m, r in res.items()) + ".")
     for w in result.get("warnings") or []:
         lines.append(f"Warning: {w}")
     lines += [
         "",
         "Next, with the Substance 3D Painter MCP:",
-        f"1. create_project(mesh_path=\"{result['file']}\", normal_map_format=\"{normal}\", resolution=2048, "
-        "close_current=true), then wait_until_idle",
-        "2. bake_mesh_maps(output_size=2048) - AO, curvature and the rest drive the wear generators",
+        f"1. create_project(mesh_path=\"{result['file']}\", normal_map_format=\"{normal}\", "
+        f"resolution={max(res.values(), default=2048)}, close_current=true), then wait_until_idle"
+        + "".join(f"; set_texture_set_resolution(size={r}, texture_sets=[\"{m}\"])"
+                  for m, r in res.items() if r != max(res.values())),
+        "2. bake_mesh_maps() - AO, curvature and the rest drive the wear generators",
         "3. Per texture set: a base material (search_resources / add_layer smart_material or a fill), then "
         "the object's history - dirt in crevices, edge wear, dust - as masks with generators (\"Dirt\", "
         "\"Edge Wear\"...). Default to used, not new; frame_camera + screenshot to judge it.",
@@ -48,7 +54,7 @@ def format_import(result: dict) -> str:
     lines = [f"Painter textures on {result['name']}:" if done else
              f"No Painter textures matched the materials of {result['name']}."]
     for mat, channels in done.items():
-        lines.append(f"- {mat}: {', '.join(channels)} (through the \"Painter\" UV map)")
+        lines.append(f"- {mat}: {', '.join(channels)} (through the \"Unwrap\" UV map)")
     if result.get("without_textures"):
         lines.append("No files for: " + ", ".join(result["without_textures"]) + " - export those texture sets "
                      "too, or check the file names end in _<TextureSet>_<Channel>.")

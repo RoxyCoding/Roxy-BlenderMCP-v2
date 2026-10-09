@@ -87,7 +87,7 @@ Each material is aged once (shared materials too); the strengths follow the obje
 add what is specific to the object with the layers below - handles polished by hands, rust where
 paint chipped, water streaks under a sill - which is what makes it this object's history rather
 than a filter. Look close up in rendered mode: it should read as used, not dirty. Game export
-needs the result baked to textures (below).
+needs the result baked to textures: `uv_bake` (below).
 
 ## Substance 3D Painter: painted wear for hero and game assets
 
@@ -99,7 +99,7 @@ the quick way for background and set dressing, and for Blender-only renders.
 1. Finish the model and its materials' split: one material per texture set (body, metal fittings,
    glass...), named for what they are.
 2. `painter_handoff(action="export", name=..., target="unreal" or "blender")` unwraps each
-   material's objects into a "Painter" UV map and writes the FBX; its reply lists the Painter MCP
+   material's objects into an "Unwrap" UV map and writes the FBX; its reply lists the Painter MCP
    steps: create_project, bake_mesh_maps, a base material and the wear layers per texture set,
    export_textures, save_project.
 3. In Painter, age it as the story needs (the table under "How much" below): used by default.
@@ -144,10 +144,10 @@ Typical stacks:
 | Concrete, plaster, stone walls | base; second texture of the same material with large-scale noise; `roxy.grime` streaks near the ground on `roxy.crevice_dirt_mask` |
 | Floors | base; `roxy.grime` in corners and along walls; worn, smoother paths where people walk (lower roughness) |
 
-The AO-based masks are exact in Cycles. EEVEE approximates ambient occlusion from
-the screen, so masks shift as the camera moves; for EEVEE renders or game export, bake the
-finished material to textures (`get_guide("retopology")`, Bake detail back, with `type="DIFFUSE"`
-and `type="ROUGHNESS"`).
+The AO-based masks are exact in Cycles. EEVEE approximates ambient occlusion from the screen,
+so masks shift as the camera moves; for EEVEE renders or game export, bake the finished material
+to textures: `uv_bake(action="unwrap")`, then `uv_bake(action="bake", target="unreal" or
+"blender")` writes BaseColor, Normal and Roughness/Metallic (or packed ORM) per texture set.
 
 ## Decals
 

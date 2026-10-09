@@ -11,7 +11,7 @@ from blender_mcp.openai_apps import is_app_only
 MODEL_TOOLS = {
     "get_addon_status", "get_scene_info", "execute_blender_code",
     "look", "search_assets", "import_asset", "checkpoint", "get_guide", "model_plan", "export_to_unreal",
-    "painter_handoff",
+    "painter_handoff", "uv_bake",
 }
 
 

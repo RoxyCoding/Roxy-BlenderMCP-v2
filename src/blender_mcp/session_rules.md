@@ -23,7 +23,9 @@ path, scattering, variation - is Geometry Nodes (roxy.repeat, instances_along_cu
 objects placed one by one (get_guide("modeling"), Geometry Nodes or by hand). Nothing is factory-new by default: after materials, roxy.weather(obj)
 ages every surface over its textures ("used"; "new" only when new is the point). When the Roxy
 Substance 3D Painter MCP is connected, hero and close-up game assets get their textures and wear
-there instead, through painter_handoff (get_guide("surface-realism")). Before calling a scene or asset done, review it with
+there instead, through painter_handoff (get_guide("surface-realism")). Anything that leaves
+Blender or gets painted or baked textures is unwrapped with uv_bake(action="unwrap") and passes
+uv_bake(action="check") first: seams on hard edges, one texel density, no stretch or overlap. Before calling a scene or asset done, review it with
 get_guide("quality-review"), and report what is still weak rather than claiming it is perfect.
 
 ## Region: Japanese by default
