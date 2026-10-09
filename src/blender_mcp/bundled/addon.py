@@ -40,7 +40,7 @@ bl_info = {
 }
 
 # Keep in sync with blender_mcp.addon_manager.EXPECTED_ADDON_PROTOCOL_VERSION.
-ADDON_PROTOCOL_VERSION = 21
+ADDON_PROTOCOL_VERSION = 22
 
 _scene_version = 0
 
@@ -4138,6 +4138,93 @@ def lathe(name, profile, segments=48, location=(0, 0, 0), parent=None, collectio
     return finish(_object(name, bm, location, parent, collection), bevel=0)
 
 
+def _rounded_rect(w, d, r, segments):
+    """The outline of a w x d rectangle with corners of radius r, as (x, y) points: the same
+    count whatever r is, so outlines of different sizes can be joined into one surface."""
+    r = min(max(r, 1e-4), w / 2 - 1e-5, d / 2 - 1e-5)
+    hw, hd = w / 2 - r, d / 2 - r
+    pts = []
+    for cx, cy, start in ((hw, hd, 0), (-hw, hd, 90), (-hw, -hd, 180), (hw, -hd, 270)):
+        for k in range(segments + 1):
+            a = math.radians(start + 90 * k / segments)
+            pts.append((cx + r * math.cos(a), cy + r * math.sin(a)))
+    return pts
+
+
+def loft(name, sections, location=(0, 0, 0), segments=6, bevel=0.002, parent=None, collection=None):
+    """One surface through rounded-rectangle cross-sections from bottom to top, each
+    (z, width, depth, corner_radius) or (z, width, depth, corner_radius, x, y) in metres:
+    tapered legs, casings with draft and rounded corners, plinths, handles, cushions, car and
+    appliance bodies, bottles that aren't round. Both ends are capped flat."""
+    bm = bmesh.new()
+    rings = []
+    for s in sections:
+        z, w, d, r = s[:4]
+        ox, oy = (s[4], s[5]) if len(s) > 5 else (0.0, 0.0)
+        rings.append([bm.verts.new((ox + x, oy + y, z)) for x, y in _rounded_rect(w, d, r, segments)])
+    n = len(rings[0])
+    for lower, upper in zip(rings, rings[1:]):
+        for i in range(n):
+            j = (i + 1) % n
+            bm.faces.new((lower[i], lower[j], upper[j], upper[i]))
+    bm.faces.new(list(reversed(rings[0])))
+    bm.faces.new(rings[-1])
+    bmesh.ops.remove_doubles(bm, verts=bm.verts, dist=1e-6)
+    bmesh.ops.recalc_face_normals(bm, faces=bm.faces)
+    return finish(_object(name, bm, location, parent, collection), bevel)
+
+
+def rounded_box(name, size, radius, location=(0, 0, 0), top=None, bottom=None, bottom_radius=None,
+                segments=6, parent=None, collection=None):
+    """A box with real rounded edges (radius in metres) instead of a sharp block: moulded
+    plastic, castings, cushions, worktops, casings. size is the part at its widest; top or
+    bottom=(width, depth) narrows that end, tapering the part (furniture legs to the foot,
+    plinths, casings with draft). bottom_radius rounds the bottom edges (default radius); 0 keeps
+    them square where the part sits flush on something."""
+    w, d, h = size
+    tw, td = top or (w, d)
+    bw, bd = bottom or (w, d)
+    rt = min(radius, h / 2)
+    rb = min(radius if bottom_radius is None else bottom_radius, h - rt)
+    width = lambda z: (bw + (tw - bw) * z / h, bd + (td - bd) * z / h)
+    sections = []
+    # Each rounded horizontal edge is a quarter circle, drawn as sections stepping in from the side.
+    for k in range(segments + 1) if rb > 0 else [segments]:
+        a = math.radians(90 * k / segments)
+        inset, z = rb * (1 - math.sin(a)), rb * (1 - math.cos(a))
+        sw, sd = width(z)
+        sections.append((z, sw - 2 * inset, sd - 2 * inset, radius - inset))
+    for k in range(segments + 1):
+        a = math.radians(90 * k / segments)
+        inset, z = rt * (1 - math.cos(a)), h - rt + rt * math.sin(a)
+        sw, sd = width(z)
+        sections.append((z, sw - 2 * inset, sd - 2 * inset, radius - inset))
+    return loft(name, sections, location, segments, parent=parent, collection=collection)
+
+
+def fuse(obj, parts, fillet=None):
+    """Merge parts into obj as one continuous body and delete them: whatever is one piece in
+    reality - a casting, a moulding, a welded frame, a carved or turned block - rather than
+    blocks touching. The Bevel from finish() then rounds the new inner seams too; fillet (metres)
+    sets its width, as a real casting or weld has a radius where pieces meet."""
+    for part in parts:
+        m = obj.modifiers.new("Fuse", "BOOLEAN")
+        m.operation = "UNION"; m.solver = "EXACT"; m.object = part
+        obj.modifiers.move(len(obj.modifiers) - 1, 0)    # applied first, under the bevel
+        bpy.context.view_layer.update()
+        bpy.context.view_layer.objects.active = obj
+        with bpy.context.temp_override(object=obj, active_object=obj):
+            bpy.ops.object.modifier_apply(modifier=m.name)
+        bpy.data.objects.remove(part)
+    if fillet is not None:
+        bevel = next((m for m in obj.modifiers if m.type == "BEVEL"), None)
+        if bevel is None:
+            finish(obj, fillet, segments=3)
+        else:
+            bevel.width = fillet; bevel.segments = max(bevel.segments, 3)
+    return obj
+
+
 # --- surface-realism ---
 
 def _breakup(nt, mask, scale, amount):
@@ -4356,7 +4443,8 @@ def realize(mod):
 
 def build(plan):
     """Build a checked plan (model_plan) under one empty named after it: box and cylinder parts
-    are made here, named <Name>_<Part>; custom parts are left for you. Rebuilding replaces them.
+    are made here, named <Name>_<Part> (a box with "radius", "top" or "bottom" as a rounded_box); custom
+    parts are left for you. Rebuilding replaces them.
     The plan is stored on the empty so model_plan(action="verify") can compare against it."""
     import json
     name = plan["name"]
@@ -4378,7 +4466,10 @@ def build(plan):
         sx, sy, sz = part["size"]
         at = tuple(part["at"])
         bevel = part.get("bevel", 0.002 if shape == "box" else 0.001)
-        if shape == "box":
+        if shape == "box" and (part.get("radius") or part.get("top") or part.get("bottom")):
+            obj = rounded_box(part_name, (sx, sy, sz), part.get("radius") or bevel, at, top=part.get("top"),
+                              bottom=part.get("bottom"), bottom_radius=part.get("bottom_radius"), parent=root)
+        elif shape == "box":
             obj = box(part_name, (sx, sy, sz), at, bevel=bevel, parent=root)
         else:
             obj = cylinder(part_name, sx / 2, sz, at, bevel=bevel, parent=root)

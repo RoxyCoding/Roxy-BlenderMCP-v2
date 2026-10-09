@@ -870,11 +870,14 @@ async def model_plan(
      "location": [0, 0, 0],
      "parts": [
        {"name": "Top", "shape": "box", "size": [1.35, 0.8, 0.03], "at": [0, 0, 0.67],
-        "rests_on": ["Leg_FL", "Leg_FR", "Leg_BL", "Leg_BR"]},
+        "radius": 0.006, "rests_on": ["Leg_FL", "Leg_FR", "Leg_BL", "Leg_BR"]},
        {"name": "Leg_FL", "shape": "box", "size": [0.04, 0.04, 0.67], "at": [0.625, -0.35, 0],
-        "rests_on": ["ground"]}, ...]}
+        "bottom": [0.028, 0.028], "radius": 0.004, "rests_on": ["ground"]}, ...]}
     - shape: box, cylinder (size [diameter, diameter, height]) or custom (add "how": the roxy
       helper or technique you will use; you build it, named <Name>_<Part>, parented to the empty).
+    - A box is never just a sharp block: give it "radius" (edge radius; "bottom_radius" 0 keeps
+      the bottom square), "top"/"bottom" [width, depth] where an end narrows (size is the widest),
+      or "plain": true for a real plain board, slab or wall.
     - at: bottom centre of the part's box. rests_on: what holds it up - parts it sits on, hangs
       from or is fixed to, or "ground". Every part must touch its supports and reach the ground.
     - size: the whole subject; the parts must span it. Work the sizes out first
@@ -916,7 +919,8 @@ async def model_plan(
         checked = json.loads(stored) if stored else _checked_plans.get(name)
         if not checked:
             return f"Error: {name} has no plan. Build it with model_plan(action=\"build\") first."
-        return model_plans.verify(checked, state.get("parts") or {}, state.get("gaps")).text(
+        return model_plans.verify(checked, state.get("parts") or {}, state.get("gaps"),
+                                  state.get("blocks")).text(
             f"{name} against its plan")
     except Exception as e:
         if "name 'roxy' is not defined" in str(e) or _addon_lacks(e):

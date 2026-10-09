@@ -12,8 +12,9 @@ LEGS = [("Leg_FL", 0.625, -0.35), ("Leg_FR", -0.625, -0.35), ("Leg_BL", 0.625, 0
 TABLE = {
     "name": "Table", "purpose": "dining table for four", "size": [1.29, 0.74, 0.7],
     "parts": [{"name": "Top", "shape": "box", "size": [1.29, 0.74, 0.03], "at": [0, 0, 0.67],
-               "rests_on": [n for n, _, _ in LEGS]}]
-    + [{"name": n, "shape": "box", "size": [0.04, 0.04, 0.67], "at": [x, y, 0], "rests_on": ["ground"]}
+               "radius": 0.006, "rests_on": [n for n, _, _ in LEGS]}]
+    + [{"name": n, "shape": "box", "size": [0.04, 0.04, 0.67], "at": [x, y, 0], "radius": 0.003,
+        "bottom": [0.028, 0.028], "rests_on": ["ground"]}
        for n, x, y in LEGS],
 }
 
@@ -69,6 +70,26 @@ def test_size_mismatch_and_unexplained_overlap_are_warnings():
     assert any("Leg_FL and Box share" in w for w in report.warnings), report.warnings
 
 
+def test_boxes_without_their_real_form_are_flagged():
+    plan = _plan(Top__radius=None, Leg_FL__radius=None, Leg_FL__bottom=None)
+    warnings = model_plan.check(plan).warnings
+    assert any(w.startswith("Plain blocks: Top, Leg_FL.") for w in warnings), warnings
+    # A part that really is a plain board says so.
+    plan = _plan(Top__radius=None, Top__plain=True, Leg_FL__radius=None, Leg_FL__bottom=None, Leg_FL__top=[0.03, 0.03])
+    assert not any("Plain blocks" in w for w in model_plan.check(plan).warnings)
+
+
+@pytest.mark.parametrize("changes, expected", [
+    ({"Top__radius": 0.5}, "Top: radius must be positive and at most half"),
+    ({"Leg_FL__bottom": [0.05, 0.03]}, "Leg_FL: bottom must be [width, depth]"),
+    ({"Leg_FL__top": [0.03]}, "Leg_FL: top must be [width, depth]"),
+    ({"Leg_FL__bottom_radius": -1}, "Leg_FL: bottom_radius must be"),
+])
+def test_a_form_that_does_not_fit_the_part_is_an_error(changes, expected):
+    errors = model_plan.check(_plan(**changes)).errors
+    assert any(expected in e for e in errors), errors
+
+
 def test_missing_purpose_is_an_error():
     plan = copy.deepcopy(TABLE)
     del plan["purpose"]
@@ -89,6 +110,14 @@ def test_verify_accepts_a_faithful_build_and_notes_extra_detail():
     report = model_plan.verify(TABLE, actual)
     assert report.ok, report.text("verify")
     assert any("Screw" in n for n in report.notes)
+
+
+def test_verify_lists_parts_still_built_as_plain_boxes():
+    plan = _plan(Leg_BR__plain=True)
+    blocks = ["Table_Top", "Table_Leg_FL", "Table_Leg_BR"]
+    warnings = model_plan.verify(plan, _built(plan), blocks=blocks).warnings
+    assert any(w.startswith("2 of 5 parts are still plain 8-vertex boxes: Leg_FL, Top.") for w in warnings), warnings
+    assert not any("plain 8-vertex" in w for w in model_plan.verify(plan, _built(plan), blocks=[]).warnings)
 
 
 def test_verify_catches_a_moved_part_a_missing_part_and_floating():

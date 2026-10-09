@@ -30,6 +30,9 @@ history, every light has a reason, and nothing gives away that it was assembled 
   as a black shape.
 - Scale: every object is real-world size relative to its neighbours (doors, chairs, people);
   check against known sizes, by default Japanese ones (`get_guide("japanese-design")`).
+- Form: no part is a plain block unless the real thing is one; parts taper, curve, crown and
+  round where the real thing does, and one-piece parts are one body. `model_plan(action="verify")`
+  lists the plain boxes left.
 - Edges: no perfectly sharp corners on manufactured or worn objects; bevels catch highlights
   (`get_guide("surface-realism")`).
 - Contact: everything rests on something; no floating, no intersecting; contact shadows visible.
@@ -71,6 +74,7 @@ history, every light has a reason, and nothing gives away that it was assembled 
 | Tell | Fix |
 |---|---|
 | Razor-sharp edges, no highlights on corners | Bevel modifier (2-3 segments) + Weighted Normal |
+| Looks like boxes stuck together | Give each part its real form: taper (`roxy.rounded_box(top=/bottom=)`), real edge radius, crown or curve (`roxy.loft`), profiles (`roxy.extrude_profile`, `roxy.sweep`); `roxy.fuse` what is one piece in reality (modeling guide, step 4) |
 | Plastic look everywhere | Vary roughness with a texture or noise; real materials from Poly Haven |
 | One flat colour per object | Poly Haven texture, or noise/AO-driven colour variation |
 | Spotless surfaces | Edge wear, crevice dirt, dust layers (surface-realism) |

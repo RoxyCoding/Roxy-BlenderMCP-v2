@@ -566,6 +566,7 @@ return out
 # real gap between the meshes of every pair of parts whose boxes come within
 # NEAR of each other: a box says a hinged lid or a round pole touches what it only
 # comes close to, the surfaces don't. Pairs left out are further apart than NEAR.
+# blocks are the parts still made of a plain 8-vertex box, bevel modifier or not.
 PLAN_STATE = r'''
 import bpy, bmesh
 from mathutils import Vector
@@ -577,10 +578,12 @@ if root is None:
     return {"error": "no object called " + ARGS["name"]}
 dg = bpy.context.evaluated_depsgraph_get()
 to_local = root.matrix_world.inverted()
-parts, shapes = {}, {}
+parts, shapes, blocks = {}, {}, []
 for x in root.children_recursive:
     if x.type not in {"MESH", "CURVE", "SURFACE", "FONT", "META", "CURVES"}:
         continue
+    if x.type == "MESH" and len(x.data.vertices) == 8 and len(x.data.polygons) == 6:
+        blocks.append(x.name)
     ev = x.evaluated_get(dg)
     pts = [to_local @ (ev.matrix_world @ Vector(c)) for c in ev.bound_box]
     parts[x.name] = [[round(min(p[i] for p in pts), 4) for i in range(3)],
@@ -619,7 +622,7 @@ for i, a in enumerate(names):
                 continue
             gap = min(dists)
         gaps.append([a, b, round(gap, 4)])
-return {"plan": root.get("roxy_plan"), "parts": parts, "gaps": gaps}
+return {"plan": root.get("roxy_plan"), "parts": parts, "gaps": gaps, "blocks": blocks}
 '''
 
 

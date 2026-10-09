@@ -210,6 +210,29 @@ def _overlaps(boxes: dict[str, Box], plan: dict, report: Report) -> None:
                                        "(one inside the other)? Otherwise move or resize one.")
 
 
+def _form(name: str, part: dict, size, report: Report) -> None:
+    """A box part's rounding and taper, if it has them, must fit the part."""
+    radius, bottom_radius = part.get("radius"), part.get("bottom_radius")
+    if radius is not None and (not isinstance(radius, (int, float)) or radius <= 0
+                               or radius > min(size[0], size[1]) / 2):
+        report.errors.append(f"{name}: radius must be positive and at most half the part's width and depth.")
+    if bottom_radius is not None and (not isinstance(bottom_radius, (int, float)) or bottom_radius < 0):
+        report.errors.append(f"{name}: bottom_radius must be 0 (square bottom edges) or positive.")
+    for end in ("top", "bottom"):
+        value = part.get(end)
+        if value is not None and (not isinstance(value, (list, tuple)) or len(value) != 2
+                                  or any(not isinstance(v, (int, float)) or v <= 0 for v in value)
+                                  or value[0] > size[0] + 1e-9 or value[1] > size[1] + 1e-9):
+            report.errors.append(f"{name}: {end} must be [width, depth] at that end, positive and no larger "
+                                 "than size, which is the part at its widest.")
+
+
+def _blocks(plan: dict) -> list[str]:
+    """Box parts that will be built as plain sharp blocks without saying the real thing is one."""
+    return [p.get("name", "?") for p in plan["parts"] if p.get("shape", "box") == "box"
+            and not (p.get("radius") or p.get("top") or p.get("bottom") or p.get("plain"))]
+
+
 def check(plan: dict) -> Report:
     """Check a plan's structure before anything is built."""
     report = Report()
@@ -248,7 +271,20 @@ def check(plan: dict) -> Report:
             continue
         if shape == "cylinder" and abs(psize[0] - psize[1]) > 1e-6:
             report.warnings.append(f"{name}: a cylinder's size is [diameter, diameter, height]; x and y differ.")
+        if shape == "box":
+            _form(name, part, psize, report)
         boxes[name] = part_box(part)
+
+    blocks = _blocks(plan)
+    if blocks:
+        listed = ", ".join(blocks[:MAX_LISTED]) + (" ..." if len(blocks) > MAX_LISTED else "")
+        report.warnings.append(
+            f"Plain blocks: {listed}. A subject built from sharp boxes looks like boxes stuck together. "
+            "Give each part its real form: \"radius\" for the rounded edges of moulded, cast, upholstered "
+            "or worn parts, \"top\" or \"bottom\" [width, depth] where an end narrows (legs tapering to "
+            "the foot, plinths, casings with draft), "
+            "or shape custom (roxy.loft, lathe, extrude_profile, sweep) for anything with a profile. "
+            "Mark \"plain\": true only where the real thing is a plain board, slab or wall.")
     if report.errors:
         return report
 
@@ -275,12 +311,14 @@ def check(plan: dict) -> Report:
     return report
 
 
-def verify(plan: dict, actual: dict[str, Box], gaps: list | None = None) -> Report:
+def verify(plan: dict, actual: dict[str, Box], gaps: list | None = None,
+           blocks: list | None = None) -> Report:
     """Compare what was built (boxes in the assembly's own space) against its plan.
 
     gaps are [part, part, metres] between the real surfaces of the pairs that come close;
     without them (an older server script) the boxes stand in for the surfaces. Detail added
     after the plan is checked too: everything must be fixed to something that is held up.
+    blocks are the parts whose mesh is still a plain 8-vertex box.
     """
     report = Report()
     prefix = plan["name"] + "_"
@@ -350,4 +388,12 @@ def verify(plan: dict, actual: dict[str, Box], gaps: list | None = None) -> Repo
                                      "never connect to the structure - the group floats.")
     _near_misses(names, gap, report)
     _not_flush(boxes, pairs, report)
+    plain = {n for n, p in planned.items() if p.get("plain")}
+    left = sorted(b for b in map(strip, blocks or []) if b in boxes and b not in plain)
+    if left:
+        report.warnings.append(
+            f"{len(left)} of {len(boxes)} parts are still plain 8-vertex boxes: {', '.join(left[:MAX_LISTED])}"
+            f"{' ...' if len(left) > MAX_LISTED else ''}. Rebuild each in its real form (roxy.rounded_box, "
+            "roxy.loft, lathe, extrude_profile, sweep; roxy.fuse where it is one piece), or mark it "
+            "\"plain\": true in the plan if the real thing is a plain board, slab or wall.")
     return report
