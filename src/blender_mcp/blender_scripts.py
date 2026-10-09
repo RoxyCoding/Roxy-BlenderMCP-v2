@@ -566,24 +566,45 @@ return out
 # real gap between the meshes of every pair of parts whose boxes come within
 # NEAR of each other: a box says a hinged lid or a round pole touches what it only
 # comes close to, the surfaces don't. Pairs left out are further apart than NEAR.
-# blocks are the parts still made of a plain 8-vertex box, bevel modifier or not.
+# primitives are the parts whose own mesh (before modifiers) is still a stand-in shape:
+# a box, a straight prism or cylinder with flat ends, a cone, or a sphere.
 PLAN_STATE = r'''
 import bpy, bmesh
 from mathutils import Vector
 from mathutils.bvhtree import BVHTree
 NEAR = 0.05
 MAX_SAMPLES = 4000
+
+def primitive(me):
+    vs = [v.co for v in me.vertices]
+    if len(vs) < 4:
+        return None
+    if len(vs) == 8 and len(me.polygons) == 6:
+        return "box"
+    levels = {}
+    for v in vs:
+        levels.setdefault(round(v.z, 5), set()).add((round(v.x, 5), round(v.y, 5)))
+    if len(levels) == 2:
+        lo, hi = levels.values()
+        return "cone" if min(len(lo), len(hi)) == 1 else "prism"
+    centre = sum(vs, Vector()) / len(vs)
+    ds = [(v - centre).length for v in vs]
+    if len(vs) > 12 and max(ds) - min(ds) < 0.01 * max(ds):
+        return "sphere"
+    return None
+
 root = bpy.data.objects.get(ARGS["name"])
 if root is None:
     return {"error": "no object called " + ARGS["name"]}
 dg = bpy.context.evaluated_depsgraph_get()
 to_local = root.matrix_world.inverted()
-parts, shapes, blocks = {}, {}, []
+parts, shapes, primitives = {}, {}, []
 for x in root.children_recursive:
     if x.type not in {"MESH", "CURVE", "SURFACE", "FONT", "META", "CURVES"}:
         continue
-    if x.type == "MESH" and len(x.data.vertices) == 8 and len(x.data.polygons) == 6:
-        blocks.append(x.name)
+    kind = primitive(x.data) if x.type == "MESH" else None
+    if kind:
+        primitives.append([x.name, kind])
     ev = x.evaluated_get(dg)
     pts = [to_local @ (ev.matrix_world @ Vector(c)) for c in ev.bound_box]
     parts[x.name] = [[round(min(p[i] for p in pts), 4) for i in range(3)],
@@ -622,7 +643,7 @@ for i, a in enumerate(names):
                 continue
             gap = min(dists)
         gaps.append([a, b, round(gap, 4)])
-return {"plan": root.get("roxy_plan"), "parts": parts, "gaps": gaps, "blocks": blocks}
+return {"plan": root.get("roxy_plan"), "parts": parts, "gaps": gaps, "primitives": primitives}
 '''
 
 

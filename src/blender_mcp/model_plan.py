@@ -26,6 +26,9 @@ NEAR_MISS = 0.03
 # careless step: a side panel standing 3 mm proud of the post it is fixed to.
 FLUSH_MIN, FLUSH_MAX = 0.001, 0.006
 MAX_LISTED = 12
+# Identifying features a plan must name: the details that make the subject this real thing
+# rather than something like it.
+MIN_FEATURES = 3
 SHAPES = ("box", "cylinder", "custom")
 GROUND = "ground"
 
@@ -211,7 +214,7 @@ def _overlaps(boxes: dict[str, Box], plan: dict, report: Report) -> None:
 
 
 def _form(name: str, part: dict, size, report: Report) -> None:
-    """A box part's rounding and taper, if it has them, must fit the part."""
+    """A box or cylinder part's rounding and taper, if it has them, must fit the part."""
     radius, bottom_radius = part.get("radius"), part.get("bottom_radius")
     if radius is not None and (not isinstance(radius, (int, float)) or radius <= 0
                                or radius > min(size[0], size[1]) / 2):
@@ -223,14 +226,26 @@ def _form(name: str, part: dict, size, report: Report) -> None:
         if value is not None and (not isinstance(value, (list, tuple)) or len(value) != 2
                                   or any(not isinstance(v, (int, float)) or v <= 0 for v in value)
                                   or value[0] > size[0] + 1e-9 or value[1] > size[1] + 1e-9):
-            report.errors.append(f"{name}: {end} must be [width, depth] at that end, positive and no larger "
-                                 "than size, which is the part at its widest.")
+            report.errors.append(f"{name}: {end} must be [width, depth] at that end (a cylinder's [diameter, "
+                                 "diameter]), positive and no larger than size, which is the part at its widest.")
 
 
-def _blocks(plan: dict) -> list[str]:
-    """Box parts that will be built as plain sharp blocks without saying the real thing is one."""
-    return [p.get("name", "?") for p in plan["parts"] if p.get("shape", "box") == "box"
+def _primitives(plan: dict) -> list[str]:
+    """Box and cylinder parts that will be built as bare primitives without saying the real
+    thing is one."""
+    return [p.get("name", "?") for p in plan["parts"] if p.get("shape", "box") in ("box", "cylinder")
             and not (p.get("radius") or p.get("top") or p.get("bottom") or p.get("plain"))]
+
+
+def _features(plan: dict, report: Report) -> None:
+    features = plan.get("features")
+    if (not isinstance(features, list) or len(features) < MIN_FEATURES
+            or not all(isinstance(f, str) and f.strip() for f in features)):
+        report.errors.append(
+            f"features must list at least {MIN_FEATURES} details that make this the real thing and not "
+            "something like it, each concrete and measurable: what someone who knows it would look for "
+            "first (\"rear legs splay back 6 degrees\", \"seat pan dished 15 mm\", \"19 mm steel tube bent "
+            "at R40, no welds showing\"). Name the specific kind, not the category.")
 
 
 def check(plan: dict) -> Report:
@@ -239,6 +254,7 @@ def check(plan: dict) -> Report:
     if not isinstance(plan, dict):
         report.errors.append("The plan must be an object with name, purpose, size and parts.")
         return report
+    _features(plan, report)
     for key in ("name", "purpose", "size", "parts"):
         if not plan.get(key):
             report.errors.append(f"Missing {key!r}.")
@@ -271,20 +287,20 @@ def check(plan: dict) -> Report:
             continue
         if shape == "cylinder" and abs(psize[0] - psize[1]) > 1e-6:
             report.warnings.append(f"{name}: a cylinder's size is [diameter, diameter, height]; x and y differ.")
-        if shape == "box":
+        if shape in ("box", "cylinder"):
             _form(name, part, psize, report)
         boxes[name] = part_box(part)
 
-    blocks = _blocks(plan)
-    if blocks:
-        listed = ", ".join(blocks[:MAX_LISTED]) + (" ..." if len(blocks) > MAX_LISTED else "")
+    bare = _primitives(plan)
+    if bare:
+        listed = ", ".join(bare[:MAX_LISTED]) + (" ..." if len(bare) > MAX_LISTED else "")
         report.warnings.append(
-            f"Plain blocks: {listed}. A subject built from sharp boxes looks like boxes stuck together. "
-            "Give each part its real form: \"radius\" for the rounded edges of moulded, cast, upholstered "
-            "or worn parts, \"top\" or \"bottom\" [width, depth] where an end narrows (legs tapering to "
-            "the foot, plinths, casings with draft), "
-            "or shape custom (roxy.loft, lathe, extrude_profile, sweep) for anything with a profile. "
-            "Mark \"plain\": true only where the real thing is a plain board, slab or wall.")
+            f"Bare primitives: {listed}. A subject built from plain boxes and cylinders is only something "
+            "like the real thing. Give each part its real form: \"radius\" for its edge radius (moulded, "
+            "cast, turned, upholstered, worn), \"top\" or \"bottom\" where an end narrows (legs tapering to "
+            "the foot, plinths, casings with draft), or shape custom (roxy.loft, lathe, extrude_profile, "
+            "sweep) for anything with a profile. Mark \"plain\": true only where the real thing is exactly "
+            "that shape: a plain board, slab, wall, rod or tube.")
     if report.errors:
         return report
 
@@ -312,13 +328,14 @@ def check(plan: dict) -> Report:
 
 
 def verify(plan: dict, actual: dict[str, Box], gaps: list | None = None,
-           blocks: list | None = None) -> Report:
+           primitives: list | None = None) -> Report:
     """Compare what was built (boxes in the assembly's own space) against its plan.
 
     gaps are [part, part, metres] between the real surfaces of the pairs that come close;
     without them (an older server script) the boxes stand in for the surfaces. Detail added
     after the plan is checked too: everything must be fixed to something that is held up.
-    blocks are the parts whose mesh is still a plain 8-vertex box.
+    primitives are [part, kind] for the parts whose mesh is still a stand-in shape (box,
+    prism, cone, sphere).
     """
     report = Report()
     prefix = plan["name"] + "_"
@@ -389,11 +406,15 @@ def verify(plan: dict, actual: dict[str, Box], gaps: list | None = None,
     _near_misses(names, gap, report)
     _not_flush(boxes, pairs, report)
     plain = {n for n, p in planned.items() if p.get("plain")}
-    left = sorted(b for b in map(strip, blocks or []) if b in boxes and b not in plain)
+    left = sorted((strip(n), kind) for n, kind in primitives or [] if strip(n) in boxes and strip(n) not in plain)
     if left:
+        listed = ", ".join(f"{n} ({kind})" for n, kind in left[:MAX_LISTED]) + (" ..." if len(left) > MAX_LISTED else "")
         report.warnings.append(
-            f"{len(left)} of {len(boxes)} parts are still plain 8-vertex boxes: {', '.join(left[:MAX_LISTED])}"
-            f"{' ...' if len(left) > MAX_LISTED else ''}. Rebuild each in its real form (roxy.rounded_box, "
-            "roxy.loft, lathe, extrude_profile, sweep; roxy.fuse where it is one piece), or mark it "
-            "\"plain\": true in the plan if the real thing is a plain board, slab or wall.")
+            f"{len(left)} of {len(boxes)} parts are still bare primitives: {listed}. A stand-in shape makes "
+            "the subject only something like the real thing. Rebuild each in its real form "
+            "(roxy.rounded_box, rounded_cylinder, loft, lathe, extrude_profile, sweep; roxy.fuse where it "
+            "is one piece), or mark it \"plain\": true in the plan if the real thing is exactly that shape.")
+    if plan.get("features"):
+        report.notes.append("Confirm each identifying feature close up with look, and fix any that doesn't "
+                            "read: " + "; ".join(plan["features"]) + ".")
     return report

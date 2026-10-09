@@ -1,6 +1,6 @@
 ---
 title: Modeling
-summary: Modeling anything yourself with Python - one method for any subject (objects, buildings, vehicles, machines, plants, terrain), working out real dimensions from use, people, standards and materials, decomposing by how things are made, giving every part its real form instead of a box, choosing techniques, tested helpers (boxes, rounded and tapered boxes, lofts, fusing one-piece parts, cylinders, profiles, lathes, sweeps, panels with openings, steps, cuts, real-scale UVs, assembling), and checking.
+summary: Modeling anything yourself with Python - one method for any subject (objects, buildings, vehicles, machines, plants, terrain), working out real dimensions from use, people, standards and materials, naming the features that make it the real thing rather than something like it, decomposing by how things are made, giving every part its real form instead of a primitive, choosing techniques, tested helpers (boxes, rounded and tapered boxes and cylinders, lofts, fusing one-piece parts, cylinders, profiles, lathes, sweeps, panels with openings, steps, cuts, real-scale UVs, assembling), and checking.
 ---
 
 # Modeling
@@ -8,7 +8,9 @@ summary: Modeling anything yourself with Python - one method for any subject (ob
 You model whatever no library has. The same method works for a cup, a chair, a vending machine,
 a car, a staircase, a school, a tree or a hillside; what changes is only the facts you feed it.
 Build every subject as the real thing it is: made for a purpose, at real size, from parts,
-each in its real form, with no razor-sharp edges. It must never look like boxes stuck together. Japanese facts unless the user names another region
+each in its real form, with no razor-sharp edges. Never settle for something that only looks
+like it - a generic chair-ish chair, boxes stuck together, a cylinder for a bottle, a sphere for
+a head, a cone for a tree. Japanese facts unless the user names another region
 (`get_guide("japanese-design")`).
 
 ## The method
@@ -18,8 +20,26 @@ each in its real form, with no razor-sharp edges. It must never look like boxes 
 Before any geometry, answer in one or two sentences: what is it, who uses it and how, what is it
 made of, how was it made (cast, bent, cut from boards, welded, grown, poured, woven), and where
 does it stand. Purpose explains form: a chair's seat height comes from legs, a handle's diameter
-from hands, a roof's slope from rain, a branch's taper from growth. If unsure what it looks like,
-say what you will assume, or ask the user for a reference image.
+from hands, a roof's slope from rain, a branch's taper from growth.
+
+Then pin down **which** one it is. "A chair" is a category; "a Japanese school chair: 22 mm
+steel tube frame bent in one piece, plywood seat and back screwed on from below, plastic feet"
+is a thing you can build. Choose the specific kind (type, era, maker style, region) that fits
+the scene and say it.
+
+Then write its **identifying features**: the details someone who knows the real thing looks
+for first, and whose absence makes a model read as "something like it". Make each one concrete
+and measurable - proportions, angles, radii, sections, how parts join, what is one piece:
+
+- School chair: back legs splay back about 6 degrees; the seat tilts back 3-5 degrees; the
+  tube bends at R40-60 with no welds at the bends.
+- Kei car: 3.4 m long, 1.48 m wide; tall cabin with an almost vertical tailgate; wheels pushed
+  to the corners; 145/80R12 or 155/65R14 tyres filling round wheel arches.
+- Wine bottle: shoulder at about two thirds of the height, neck 30 mm across with a lip, a
+  punt pushed up into the base.
+
+Model every feature, and check each one at the end. If you can't name at least three, you
+don't know the subject well enough yet: say what you will assume, or ask for a reference image.
 
 ### 2. Work out the dimensions
 
@@ -58,8 +78,9 @@ separately, and the subject is assembled from them (`roxy.assemble`).
 
 ### 4. Give every part its real form
 
-A box is where a part starts, not what it is. Before choosing a technique, say for each part
-what makes it more than a block - this is what separates a model from boxes stuck together:
+A box, cylinder, sphere or cone is where a part starts, not what it is. Before choosing a
+technique, say for each part what makes it more than a primitive - this is what separates the
+real thing from something like it:
 
 - **Section and taper.** Legs narrow to the foot, posts and plinths step or chamfer, casings
   have draft, a handle is thicker where the hand grips. Few real parts keep one section from
@@ -78,9 +99,20 @@ what makes it more than a block - this is what separates a model from boxes stuc
   separate where the real thing is assembled, and the joint shows how (seam, gap, fastener).
 - **Profiles, not stacks.** A moulding, a frame, a counter edge, a step nosing, a rail is one
   `roxy.extrude_profile` or `roxy.sweep` with its real section, never a pile of thin boxes.
+- **Round things have a side profile.** A bottle has a shoulder, neck and lip; a cup a foot and
+  a rim; a table leg turned on a lathe has beads and a taper; a tyre has a bulging sidewall and
+  tread; a lamp shade flares. Draw that profile (`roxy.lathe`) instead of a cylinder.
+- **Organic things are not geometric.** A head is not a sphere, a tree not a cone on a cylinder,
+  a rock not a cube, a cushion not a box. Start from the real proportions and silhouette and
+  shape them (Subdivision Surface over a shaped cage, `roxy.loft`, sculpted Displace), or use a
+  library asset.
+- **Nothing perfectly regular that isn't.** Hand-made, grown and worn things vary: planks differ
+  in width, stones in size, leaves in angle, a cushion sags where it is sat on. Machine-made
+  things are regular - keep those exact.
 
-Some parts really are plain blocks: a wall, a floor slab, a shelf board, a brick, a sheet of
-glass. Say so (`"plain": true` in the plan); everything else gets its form.
+Some parts really are that plain shape: a wall, a floor slab, a shelf board, a brick, a sheet
+of glass, a rod, a straight tube. Say so (`"plain": true` in the plan); everything else gets its
+form.
 
 ### 5. Choose a technique per part
 
@@ -92,7 +124,8 @@ glass. Say so (`"plain": true` in the plan); everything else gets its form.
 | Bodies whose section changes along their height (appliances, car bodies, seats, handles, non-round bottles) | `roxy.loft` through rounded-rectangle sections |
 | One-piece parts made from several shapes (castings, mouldings, welded frames, carved blocks) | build the pieces, then `roxy.fuse` them with a fillet |
 | Boards and walls with holes (doors, windows, vents, displays) | `roxy.panel_with_openings`, or `roxy.cut` |
-| Legs, poles, posts, pipes, knobs | `roxy.cylinder` |
+| Straight rods, tubes and pipes | `roxy.cylinder` |
+| Round legs, feet, knobs, caps, columns (rounded ends, tapers) | `roxy.rounded_cylinder` |
 | Round things turned on an axis (bottles, cups, vases, lamps, columns, wheels) | `roxy.lathe` from a side profile |
 | Anything with a custom outline (mouldings, brackets, frames, roofs, signs, rail sections) | `roxy.extrude_profile` |
 | Members along a path (handrails, pipes, frames, cables, bent tubes) | `roxy.sweep` |
@@ -105,7 +138,8 @@ glass. Say so (`"plain": true` in the plan); everything else gets its form.
 
 ### 6. Write the plan and check it
 
-Steps 1-4 become a plan: the subject's name, purpose and overall size, and every structural part
+Steps 1-4 become a plan: the subject's name, purpose and overall size, its identifying
+`features` (at least three, from step 1), and every structural part
 with its shape, size, position (`at`, the bottom centre of its box) and what holds it up
 (`rests_on`: the parts it sits on, hangs from or is fixed to, or "ground"). Submit it with
 `model_plan(action="check", plan=...)` and fix every error until it passes. The check catches
@@ -113,10 +147,10 @@ what a misunderstood structure looks like: parts that float, supports that don't
 that never reach the ground, parts outside the whole, two parts in one place.
 
 Plan the structure and major parts, not every screw: detail comes after and doesn't need a plan.
-A box part carries its form: `"radius"` for its edge radius, `"top"` or `"bottom"`
-[width, depth] where an end narrows (`size` is the part at its widest), and `build` makes it with
-`roxy.rounded_box`; `"plain": true` where the real thing is a plain board, slab or wall. The check
-warns about every box with none of these. Parts no box or cylinder describes (a lathe-turned leg,
+A box or cylinder part carries its form: `"radius"` for its edge radius, `"top"` or `"bottom"`
+[width, depth] (a cylinder's [diameter, diameter]) where an end narrows (`size` is the part at its
+widest), and `build` makes it with `roxy.rounded_box` or `roxy.rounded_cylinder`; `"plain": true`
+where the real thing is exactly that shape. The check warns about every bare primitive. Parts no box or cylinder describes (a lathe-turned leg,
 a curved backrest, a lofted body) are `"shape": "custom"` with `"how"` naming the helper you will
 use; give them the box they occupy.
 
@@ -135,7 +169,8 @@ early is cheap, fixing them after detail is not. Save a checkpoint before anythi
 When the build is done, `model_plan(action="verify", name=...)` compares it with the plan: every
 part present, at its planned size and place, touching its supports and grounded. Fix what it
 reports, or change the plan and build again if the plan was wrong. It also lists every part
-that is still a plain 8-vertex box and not marked plain: give each its form. Move or turn the whole subject
+that is still a bare primitive (box, straight prism or cylinder, cone, sphere) and not marked
+plain, and lists the identifying features to confirm close up. Move or turn the whole subject
 only through its empty.
 
 ### 8. Surface, light, review
@@ -149,11 +184,12 @@ Tested on Blender 5.1. They build mesh data directly (no viewport or mode switch
 scale at 1, and put the origin at the bottom centre so `location` is where the part stands.
 Most parts get `roxy.finish()`: a small angle-limited bevel and weighted normals.
 
-The addon provides these as `roxy.<name>` inside execute_blender_code (addon protocol 18+), so call them directly - don't paste or redefine them. If `roxy` is undefined, the Blender addon is outdated: get_addon_status says how to update it. `roxy.rounded_box`, `roxy.loft` and `roxy.fuse` need protocol 22.
+The addon provides these as `roxy.<name>` inside execute_blender_code (addon protocol 18+), so call them directly - don't paste or redefine them. If `roxy` is undefined, the Blender addon is outdated: get_addon_status says how to update it. `roxy.rounded_box`, `roxy.rounded_cylinder`, `roxy.loft` and `roxy.fuse` need protocol 22.
 
 - `roxy.finish(obj, bevel=0.002, segments=2)` - Rounded edges that catch highlights, with clean shading.
 - `roxy.box(name, size, location=(0, 0, 0), bevel=0.002, parent=None, collection=None, origin='bottom')` - A box of real size (x, y, z metres) with scale 1.
 - `roxy.rounded_box(name, size, radius, location=(0, 0, 0), top=None, bottom=None, bottom_radius=None, segments=6, parent=None, collection=None)` - A box with real rounded edges (radius in metres): size is the part at its widest, top/bottom=(width, depth) narrow that end into a taper, bottom_radius=0 keeps the bottom edges square where it sits flush.
+- `roxy.rounded_cylinder(name, radius, depth, edge, location=(0, 0, 0), top=None, bottom=None, segments=48, parent=None, collection=None)` - A turned round part with rounded end edges (edge in metres): radius is the part at its widest, top/bottom (a radius) narrow that end into a taper.
 - `roxy.loft(name, sections, location=(0, 0, 0), segments=6, bevel=0.002, parent=None, collection=None)` - One surface through rounded-rectangle sections from bottom to top, each (z, width, depth, corner_radius) or (z, width, depth, corner_radius, x, y): bodies whose section changes along their height. Both ends are capped flat.
 - `roxy.fuse(obj, parts, fillet=None)` - Merge parts into obj as one continuous body (boolean union) and delete them; fillet (metres) rounds the seams where they meet, as on a casting or weld.
 - `roxy.cylinder(name, radius, depth, location=(0, 0, 0), segments=32, bevel=0.001, parent=None, collection=None, origin='bottom')` - An upright cylinder (legs, poles, pipes, knobs).
@@ -227,9 +263,10 @@ table = roxy.assemble("Table", [top, *legs, *aprons])
 
 ## Checking
 
-- **Form:** `look(mode="angles")` and ask whether it reads as the real thing or as boxes stuck
-  together. If several parts are still sharp blocks of one section, give them their taper,
-  radius, crown or profile (step 4) before adding any detail.
+- **Is it the real thing?** `look(mode="angles")` and go through the identifying features one by
+  one, close up: each must be visible and right. Then ask whether someone who owns one would
+  recognise it as that kind, or only as "a chair" / "a car". If parts are still bare primitives,
+  give them their taper, radius, profile or organic shape (step 4) before adding any detail.
 - **Structure:** `model_plan(action="verify", name=...)` after building, after adding detail and
   after any change to the parts. It measures the real surfaces, not bounding boxes: every part,
   detail included, must touch what holds it and connect to the structure. Fix its errors; read

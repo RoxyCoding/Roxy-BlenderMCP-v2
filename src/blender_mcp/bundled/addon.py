@@ -4202,6 +4202,24 @@ def rounded_box(name, size, radius, location=(0, 0, 0), top=None, bottom=None, b
     return loft(name, sections, location, segments, parent=parent, collection=collection)
 
 
+def rounded_cylinder(name, radius, depth, edge, location=(0, 0, 0), top=None, bottom=None, segments=48,
+                     parent=None, collection=None):
+    """A turned round part with real rounded end edges (edge, metres) instead of a sharp
+    cylinder: legs, feet, knobs, caps, pucks, columns, posts. radius is the part at its widest;
+    top or bottom (a radius) narrows that end into a taper."""
+    rt, rb = top or radius, bottom or radius
+    e = max(1e-4, min(edge, depth / 2, rt, rb))
+    profile = [(0.0, 0.0)]
+    for k in range(7):    # bottom edge, a quarter circle from the base round to the side
+        a = math.radians(15 * k)
+        profile.append((rb - e + e * math.sin(a), e - e * math.cos(a)))
+    for k in range(7):    # top edge, from the side round to the top face
+        a = math.radians(15 * k)
+        profile.append((rt - e + e * math.cos(a), depth - e + e * math.sin(a)))
+    profile.append((0.0, depth))
+    return lathe(name, profile, segments, location, parent=parent, collection=collection)
+
+
 def fuse(obj, parts, fillet=None):
     """Merge parts into obj as one continuous body and delete them: whatever is one piece in
     reality - a casting, a moulding, a welded frame, a carved or turned block - rather than
@@ -4443,7 +4461,8 @@ def realize(mod):
 
 def build(plan):
     """Build a checked plan (model_plan) under one empty named after it: box and cylinder parts
-    are made here, named <Name>_<Part> (a box with "radius", "top" or "bottom" as a rounded_box); custom
+    are made here, named <Name>_<Part> (one with "radius", "top" or "bottom" as a rounded_box or
+    rounded_cylinder); custom
     parts are left for you. Rebuilding replaces them.
     The plan is stored on the empty so model_plan(action="verify") can compare against it."""
     import json
@@ -4471,6 +4490,10 @@ def build(plan):
                               bottom=part.get("bottom"), bottom_radius=part.get("bottom_radius"), parent=root)
         elif shape == "box":
             obj = box(part_name, (sx, sy, sz), at, bevel=bevel, parent=root)
+        elif part.get("radius") or part.get("top") or part.get("bottom"):
+            end = lambda key: part[key][0] / 2 if part.get(key) else None
+            obj = rounded_cylinder(part_name, sx / 2, sz, part.get("radius") or bevel, at, top=end("top"),
+                                   bottom=end("bottom"), parent=root)
         else:
             obj = cylinder(part_name, sx / 2, sz, at, bevel=bevel, parent=root)
         uv_world_box(obj, space="local")

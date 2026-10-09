@@ -855,33 +855,33 @@ async def model_plan(
     name: str | None = None,
 ) -> str:
     """
-    Write down the structure of anything with more than one part before modeling it, check it,
-    build it, and verify the result. Don't model a multi-part subject without a plan that passed
-    check: it is how you show you understand what holds it together.
+    Write down what a multi-part subject is and how it holds together before modeling it, check
+    it, build it, and verify the result. Never model one without a plan that passed check.
 
     - action="check", plan={...}: validate the plan; fix every error and check again.
-    - action="build", name=...: build a checked plan's box and cylinder parts under an empty
-      called name (each part <Name>_<Part>); then add custom parts and detail yourself.
-    - action="verify", name=...: compare what is in the scene with the plan stored on it, and
-      measure the real surfaces: every part, added detail too, must be fixed to what holds it.
+    - action="build", name=...: build its box and cylinder parts under an empty called name
+      (each <Name>_<Part>); then add custom parts and detail yourself.
+    - action="verify", name=...: compare the scene with the plan stored on it, measure the real
+      surfaces (every part must be fixed to what holds it) and list bare primitives left.
 
     Plan (metres, relative to the subject's bottom centre):
-    {"name": "Table", "purpose": "dining table for four", "size": [1.35, 0.8, 0.7],
-     "location": [0, 0, 0],
+    {"name": "Table", "purpose": "four-seat dining table, solid oak", "size": [1.35, 0.8, 0.7],
+     "features": ["legs 40 mm square tapering to 28 mm at the foot", "top edge rounded R6",
+                  "aprons set back 20 mm from the leg faces"],
      "parts": [
        {"name": "Top", "shape": "box", "size": [1.35, 0.8, 0.03], "at": [0, 0, 0.67],
         "radius": 0.006, "rests_on": ["Leg_FL", "Leg_FR", "Leg_BL", "Leg_BR"]},
        {"name": "Leg_FL", "shape": "box", "size": [0.04, 0.04, 0.67], "at": [0.625, -0.35, 0],
         "bottom": [0.028, 0.028], "radius": 0.004, "rests_on": ["ground"]}, ...]}
-    - shape: box, cylinder (size [diameter, diameter, height]) or custom (add "how": the roxy
-      helper or technique you will use; you build it, named <Name>_<Part>, parented to the empty).
-    - A box is never just a sharp block: give it "radius" (edge radius; "bottom_radius" 0 keeps
-      the bottom square), "top"/"bottom" [width, depth] where an end narrows (size is the widest),
-      or "plain": true for a real plain board, slab or wall.
-    - at: bottom centre of the part's box. rests_on: what holds it up - parts it sits on, hangs
-      from or is fixed to, or "ground". Every part must touch its supports and reach the ground.
-    - size: the whole subject; the parts must span it. Work the sizes out first
-      (get_guide("modeling")).
+    - features: 3+ measurable details that make it this real thing, not something like it.
+    - shape: box, cylinder (size [diameter, diameter, height]) or custom (with "how": the roxy
+      helper you will use; you build it as <Name>_<Part>, parented to the empty).
+    - No bare primitives: give boxes and cylinders "radius" (edge radius), "top"/"bottom"
+      ([width, depth] where an end narrows; size is the widest), or "plain": true only when the
+      real thing is exactly that shape.
+    - at: bottom centre of the part's box. rests_on: the parts it sits on, hangs from or is
+      fixed to, or "ground"; supports must touch and reach the ground.
+    - size: the whole subject; the parts span it (get_guide("modeling")).
     """
     if action not in PLAN_ACTIONS:
         return f"Error: action must be one of {', '.join(PLAN_ACTIONS)}."
@@ -920,7 +920,7 @@ async def model_plan(
         if not checked:
             return f"Error: {name} has no plan. Build it with model_plan(action=\"build\") first."
         return model_plans.verify(checked, state.get("parts") or {}, state.get("gaps"),
-                                  state.get("blocks")).text(
+                                  state.get("primitives")).text(
             f"{name} against its plan")
     except Exception as e:
         if "name 'roxy' is not defined" in str(e) or _addon_lacks(e):

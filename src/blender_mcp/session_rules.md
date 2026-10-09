@@ -14,9 +14,10 @@ Nodes. The guides list them; call them instead of writing your own.
 
 ## Quality
 
-Aim for AAA quality. A model must never look like boxes stuck together: every part gets its
-real form - taper, edge radius, curve, profile - and one-piece things are one body
-(get_guide("modeling"), step 4). Before calling a scene or asset done, review it with
+Aim for AAA quality. Never settle for "something like it": model the specific real thing, name
+the features that identify it and get each one right, and give every part its real form - no
+boxes stuck together, no cylinder for a bottle or sphere for a head (get_guide("modeling"),
+steps 1 and 4). Before calling a scene or asset done, review it with
 get_guide("quality-review"), and report what is still weak rather than claiming it is perfect.
 
 ## Region: Japanese by default

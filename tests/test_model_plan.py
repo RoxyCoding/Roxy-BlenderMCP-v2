@@ -11,6 +11,8 @@ from blender_mcp import model_plan, server
 LEGS = [("Leg_FL", 0.625, -0.35), ("Leg_FR", -0.625, -0.35), ("Leg_BL", 0.625, 0.35), ("Leg_BR", -0.625, 0.35)]
 TABLE = {
     "name": "Table", "purpose": "dining table for four", "size": [1.29, 0.74, 0.7],
+    "features": ["legs 40 mm square tapering to 28 mm at the foot", "top edge rounded R6",
+                 "legs inset 35 mm from the top's edges"],
     "parts": [{"name": "Top", "shape": "box", "size": [1.29, 0.74, 0.03], "at": [0, 0, 0.67],
                "radius": 0.006, "rests_on": [n for n, _, _ in LEGS]}]
     + [{"name": n, "shape": "box", "size": [0.04, 0.04, 0.67], "at": [x, y, 0], "radius": 0.003,
@@ -70,13 +72,23 @@ def test_size_mismatch_and_unexplained_overlap_are_warnings():
     assert any("Leg_FL and Box share" in w for w in report.warnings), report.warnings
 
 
-def test_boxes_without_their_real_form_are_flagged():
-    plan = _plan(Top__radius=None, Leg_FL__radius=None, Leg_FL__bottom=None)
+def test_bare_primitives_are_flagged():
+    plan = _plan(Top__radius=None, Leg_FL__radius=None, Leg_FL__bottom=None, Leg_FR__shape="cylinder",
+                 Leg_FR__radius=None, Leg_FR__bottom=None)
     warnings = model_plan.check(plan).warnings
-    assert any(w.startswith("Plain blocks: Top, Leg_FL.") for w in warnings), warnings
-    # A part that really is a plain board says so.
-    plan = _plan(Top__radius=None, Top__plain=True, Leg_FL__radius=None, Leg_FL__bottom=None, Leg_FL__top=[0.03, 0.03])
-    assert not any("Plain blocks" in w for w in model_plan.check(plan).warnings)
+    assert any(w.startswith("Bare primitives: Top, Leg_FL, Leg_FR.") for w in warnings), warnings
+    # A part that really is that plain shape says so; a tapered cylinder has its form.
+    plan = _plan(Top__radius=None, Top__plain=True, Leg_FL__radius=None, Leg_FL__bottom=None,
+                 Leg_FL__top=[0.03, 0.03], Leg_FR__shape="cylinder", Leg_FR__radius=None)
+    assert not any("Bare primitives" in w for w in model_plan.check(plan).warnings)
+
+
+@pytest.mark.parametrize("features", [None, [], ["oak"], ["oak", "four legs", " "]])
+def test_a_plan_must_name_the_features_that_identify_the_real_thing(features):
+    plan = copy.deepcopy(TABLE)
+    plan["features"] = features
+    errors = model_plan.check(plan).errors
+    assert any(e.startswith("features must list at least 3 details") for e in errors), errors
 
 
 @pytest.mark.parametrize("changes, expected", [
@@ -112,12 +124,14 @@ def test_verify_accepts_a_faithful_build_and_notes_extra_detail():
     assert any("Screw" in n for n in report.notes)
 
 
-def test_verify_lists_parts_still_built_as_plain_boxes():
+def test_verify_lists_parts_still_built_as_bare_primitives():
     plan = _plan(Leg_BR__plain=True)
-    blocks = ["Table_Top", "Table_Leg_FL", "Table_Leg_BR"]
-    warnings = model_plan.verify(plan, _built(plan), blocks=blocks).warnings
-    assert any(w.startswith("2 of 5 parts are still plain 8-vertex boxes: Leg_FL, Top.") for w in warnings), warnings
-    assert not any("plain 8-vertex" in w for w in model_plan.verify(plan, _built(plan), blocks=[]).warnings)
+    bare = [["Table_Top", "box"], ["Table_Leg_FL", "prism"], ["Table_Leg_BR", "box"]]
+    report = model_plan.verify(plan, _built(plan), primitives=bare)
+    assert any(w.startswith("2 of 5 parts are still bare primitives: Leg_FL (prism), Top (box).")
+               for w in report.warnings), report.warnings
+    assert any("legs 40 mm square tapering" in n for n in report.notes), report.notes
+    assert not any("bare primitives" in w for w in model_plan.verify(plan, _built(plan), primitives=[]).warnings)
 
 
 def test_verify_catches_a_moved_part_a_missing_part_and_floating():
@@ -131,6 +145,7 @@ def test_verify_catches_a_moved_part_a_missing_part_and_floating():
 
 POLE = {
     "name": "Stand", "purpose": "pole with a shelf", "size": [0.2, 0.2, 1.0],
+    "features": ["100 mm steel pole", "square shelf", "shelf clamped to the pole"],
     "parts": [{"name": "Pole", "shape": "cylinder", "size": [0.1, 0.1, 1.0], "at": [0, 0, 0],
                "rests_on": ["ground"]}],
 }
