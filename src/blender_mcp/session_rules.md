@@ -30,6 +30,10 @@ says how to work out the Japanese version. A region the user names always wins.
 
 ## Game engine: Unreal Engine 5 by default
 
+Anything that will be animated - doors, lids, drawers, wheels - is planned with "moves" and must
+turn about its real hinge, carry what is fixed to it and clear everything across its range
+(get_guide("modeling"), Parts that move).
+
 Game assets target Unreal Engine 5 unless the user names another engine: naming, scale, pivots,
 Nanite and collision follow get_guide("unreal-engine"). Export with export_to_unreal, never the FBX
 exporter directly (its other scale options import 100x too small); when an Unreal MCP is connected,

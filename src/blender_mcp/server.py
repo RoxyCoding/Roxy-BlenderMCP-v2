@@ -804,6 +804,8 @@ async def export_to_unreal(
       under it (an assembly empty, a mesh, or a character's root/armature). It names the asset
       SM_/SK_, exports from the asset's own origin, renames the armature to "Armature" for the
       export, includes UCX_/UBX_/USP_/UCP_ collision and SOCKET_ empties, and puts everything back.
+      Moving parts in its model_plan (doors, lids, drawers) export as their own meshes pivoting on
+      their hinge, with where to place them and how to turn them in a Blueprint.
       The reply gives the file, the bounds Unreal should report, and the Unreal MCP steps.
     - action="verify": pass what the Unreal MCP's get_bounds returned as unreal_bounds; it is
       compared with the export's prediction.
@@ -855,33 +857,33 @@ async def model_plan(
     name: str | None = None,
 ) -> str:
     """
-    Write down what a multi-part subject is and how it holds together before modeling it, check
-    it, build it, and verify the result. Never model one without a plan that passed check.
+    Write down what a multi-part subject is and how it holds together and moves before modeling
+    it, check it, build it, and verify the result. Never model one without a passed check.
 
-    - action="check", plan={...}: validate the plan; fix every error and check again.
+    - action="check", plan={...}: validate; fix every error and check again.
     - action="build", name=...: build its box and cylinder parts under an empty called name
-      (each <Name>_<Part>); then add custom parts and detail yourself.
-    - action="verify", name=...: compare the scene with the plan stored on it, measure the real
-      surfaces (every part must be fixed to what holds it) and list bare primitives left.
+      (each <Name>_<Part>), hinge pivots and moving hierarchy included; add the rest yourself.
+    - action="verify", name=...: compare the scene with its plan on the real surfaces, list bare
+      primitives, and move every moving part through its range looking for collisions.
 
-    Plan (metres, relative to the subject's bottom centre):
-    {"name": "Table", "purpose": "four-seat dining table, solid oak", "size": [1.35, 0.8, 0.7],
-     "features": ["legs 40 mm square tapering to 28 mm at the foot", "top edge rounded R6",
-                  "aprons set back 20 mm from the leg faces"],
+    Plan (metres, from the subject's bottom centre):
+    {"name": "Cabinet", "purpose": "kitchen wall cabinet, one door", "size": [0.6, 0.35, 0.7],
+     "features": ["door overlays the carcass 18 mm", "2 mm gap round the door", "bar handle"],
      "parts": [
-       {"name": "Top", "shape": "box", "size": [1.35, 0.8, 0.03], "at": [0, 0, 0.67],
-        "radius": 0.006, "rests_on": ["Leg_FL", "Leg_FR", "Leg_BL", "Leg_BR"]},
-       {"name": "Leg_FL", "shape": "box", "size": [0.04, 0.04, 0.67], "at": [0.625, -0.35, 0],
-        "bottom": [0.028, 0.028], "radius": 0.004, "rests_on": ["ground"]}, ...]}
+       {"name": "Body", "shape": "box", "size": [0.6, 0.33, 0.7], "at": [0, 0.01, 0],
+        "radius": 0.002, "rests_on": ["ground"]},
+       {"name": "Door", "shape": "box", "size": [0.596, 0.018, 0.696], "at": [0, -0.164, 0.002],
+        "radius": 0.002, "rests_on": ["Body"], "moves": {"type": "hinge", "axis": "z",
+        "pivot": [-0.298, -0.173, 0], "range": [-110, 0]}}, ...]}
     - features: 3+ measurable details that make it this real thing, not something like it.
-    - shape: box, cylinder (size [diameter, diameter, height]) or custom (with "how": the roxy
-      helper you will use; you build it as <Name>_<Part>, parented to the empty).
-    - No bare primitives: give boxes and cylinders "radius" (edge radius), "top"/"bottom"
-      ([width, depth] where an end narrows; size is the widest), or "plain": true only when the
-      real thing is exactly that shape.
+    - shape: box, cylinder (size [d, d, h]) or custom (with "how", the roxy helper; you build it
+      as <Name>_<Part> under the empty).
+    - Boxes and cylinders need "radius" (edge radius), "top"/"bottom" ([w, d] where an end
+      narrows; size is the widest), or "plain": true only if the real thing is that shape.
+    - moves (doors, lids, drawers): hinge about axis through pivot, or slide along axis; range
+      in degrees or metres around the modelled rest pose 0. What rests on it moves with it.
     - at: bottom centre of the part's box. rests_on: the parts it sits on, hangs from or is
-      fixed to, or "ground"; supports must touch and reach the ground.
-    - size: the whole subject; the parts span it (get_guide("modeling")).
+      fixed to, or "ground".
     """
     if action not in PLAN_ACTIONS:
         return f"Error: action must be one of {', '.join(PLAN_ACTIONS)}."
@@ -920,7 +922,7 @@ async def model_plan(
         if not checked:
             return f"Error: {name} has no plan. Build it with model_plan(action=\"build\") first."
         return model_plans.verify(checked, state.get("parts") or {}, state.get("gaps"),
-                                  state.get("primitives")).text(
+                                  state.get("primitives"), state.get("motion")).text(
             f"{name} against its plan")
     except Exception as e:
         if "name 'roxy' is not defined" in str(e) or _addon_lacks(e):

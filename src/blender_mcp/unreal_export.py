@@ -63,12 +63,48 @@ def compare(expected: dict, unreal_bounds: dict) -> tuple[bool, list[str]]:
     return not findings, findings
 
 
+# A rotation of +a about Blender's x, y or z axis, seen in Unreal (Y flipped, left-handed
+# rotators): (rotator field, sign). Yaw turns X towards Y, Roll turns Y towards -Z, Pitch turns
+# X towards Z; mirroring Y reverses the sense of every rotation.
+UNREAL_ROTATION = {"x": ("Roll", 1), "y": ("Pitch", -1), "z": ("Yaw", -1)}
+
+
+def unreal_motion(moving: dict) -> str:
+    """How a moving part exported on its own moves in Unreal, relative to the main asset."""
+    mv = moving["moves"]
+    p = moving["pivot_m"]
+    place = "({:.1f}, {:.1f}, {:.1f}) cm".format(*(round(c * 100, 1) + 0.0 for c in (p[0], -p[1], p[2])))
+    lo, hi = mv["range"]
+    axis = mv["axis"]
+    if mv["type"] == "slide":
+        if isinstance(axis, str):
+            sign = -1 if axis.startswith("-") else 1
+            vec = [float(axis.lower().lstrip("+-") == a) * sign for a in "xyz"]
+        else:
+            n = sum(v * v for v in axis) ** 0.5
+            vec = [v / n for v in axis]
+        cm = lambda t: "({:.1f}, {:.1f}, {:.1f}) cm".format(
+            *(round(c * t * 100, 1) + 0.0 for c in (vec[0], -vec[1], vec[2])))
+        return (f"place at {place}; it slides from relative location {cm(lo)} to {cm(hi)} "
+                "(0 is closed, as modelled).")
+    if isinstance(axis, str) and axis.lower().lstrip("+-") in UNREAL_ROTATION:
+        field, sign = UNREAL_ROTATION[axis.lower().lstrip("+-")]
+        sign *= -1 if axis.startswith("-") else 1
+        ends = sorted((sign * lo, sign * hi))
+        return (f"place at {place}; animate relative rotation {field} from {ends[0]:g} to {ends[1]:g} degrees "
+                "(0 is closed, as modelled).")
+    v = [axis[0], -axis[1], axis[2]]
+    return (f"place at {place}; it turns about the Unreal axis ({v[0]:.3f}, {v[1]:.3f}, {v[2]:.3f}) through "
+            f"{lo:g} to {hi:g} degrees in Blender's sense - check the direction once in the editor.")
+
+
 def format_export(result: dict, ue_folder: str) -> str:
     """The reply for action="export": what was written, and the Unreal steps that follow."""
     kind, asset, path = result["kind"], result["asset"], result["file"]
     b = result["expected_bounds_cm"]
     lines = [
-        f"Exported {kind} mesh {asset} to {path}",
+        f"Exported {kind} mesh {asset} to {path}" if path else
+        f"{asset} has only moving parts; nothing static was exported.",
         f"Expected in Unreal (cm): min ({b['min']['x']:.1f}, {b['min']['y']:.1f}, {b['min']['z']:.1f}), "
         f"max ({b['max']['x']:.1f}, {b['max']['y']:.1f}, {b['max']['z']:.1f}); {result['triangles']} triangles.",
     ]
@@ -81,6 +117,14 @@ def format_export(result: dict, ue_folder: str) -> str:
         lines.append(f"Collision meshes: {', '.join(result['collisions'])}.")
     for w in result.get("warnings") or []:
         lines.append(f"Warning: {w}")
+    moving = result.get("moving") or []
+    if moving:
+        lines.append("")
+        lines.append("Moving parts, each its own mesh with its pivot on its hinge or runner (so the "
+                     f"game can open it): build a Blueprint with {asset} as the root component and each of these "
+                     "as a child Static Mesh Component, moved by a Timeline:")
+        for m in moving:
+            lines.append(f"- {m['asset']} ({m['file']}): {unreal_motion(m)}")
     toolset = "SkeletalMeshTools" if kind == "skeletal" else "StaticMeshTools"
     lines += [
         "",
@@ -97,6 +141,9 @@ def format_export(result: dict, ue_folder: str) -> str:
     else:
         lines.append("4. Check the skeleton: SkeletalMeshTools.get_bone_names - one root, no extra "
                      "bone named after the armature.")
+    if moving:
+        lines.append("Import the moving parts the same way (asset_name each one's name above); add their "
+                     "collision so the player can't walk through an open door.")
     lines.append("Save the new assets with AssetTools.save_assets once they check out.")
     return "\n".join(lines)
 

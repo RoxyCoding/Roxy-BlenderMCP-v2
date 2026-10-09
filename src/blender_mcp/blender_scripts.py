@@ -568,11 +568,14 @@ return out
 # comes close to, the surfaces don't. Pairs left out are further apart than NEAR.
 # primitives are the parts whose own mesh (before modifiers) is still a stand-in shape:
 # a box, a straight prism or cylinder with flat ends, a cone, or a sphere.
+# motion moves each part the plan says moves through its range about its real origin, as a
+# game engine will, and reports what its mesh and everything parented under it run into.
 PLAN_STATE = r'''
-import bpy, bmesh
-from mathutils import Vector
+import bpy, bmesh, json, math
+from mathutils import Matrix, Vector
 from mathutils.bvhtree import BVHTree
 NEAR = 0.05
+STEPS = 24
 MAX_SAMPLES = 4000
 
 def primitive(me):
@@ -589,7 +592,8 @@ def primitive(me):
         return "cone" if min(len(lo), len(hi)) == 1 else "prism"
     centre = sum(vs, Vector()) / len(vs)
     ds = [(v - centre).length for v in vs]
-    if len(vs) > 12 and max(ds) - min(ds) < 0.01 * max(ds):
+    extent = [max(v[i] for v in vs) - min(v[i] for v in vs) for i in range(3)]
+    if len(vs) > 12 and max(ds) - min(ds) < 0.01 * max(ds) and min(extent) > 0.98 * max(extent):
         return "sphere"
     return None
 
@@ -598,7 +602,7 @@ if root is None:
     return {"error": "no object called " + ARGS["name"]}
 dg = bpy.context.evaluated_depsgraph_get()
 to_local = root.matrix_world.inverted()
-parts, shapes, primitives = {}, {}, []
+parts, shapes, primitives, meshes = {}, {}, [], {}
 for x in root.children_recursive:
     if x.type not in {"MESH", "CURVE", "SURFACE", "FONT", "META", "CURVES"}:
         continue
@@ -622,6 +626,7 @@ for x in root.children_recursive:
     if bm.verts and bm.faces:
         step = max(1, len(bm.verts) // MAX_SAMPLES)
         shapes[x.name] = (BVHTree.FromBMesh(bm), [v.co.copy() for v in bm.verts][::step])
+        meshes[x.name] = ([v.co.copy() for v in bm.verts], [[v.index for v in f.verts] for f in bm.faces])
     bm.free()
 
 def apart(a, b):
@@ -643,15 +648,57 @@ for i, a in enumerate(names):
                 continue
             gap = min(dists)
         gaps.append([a, b, round(gap, 4)])
-return {"plan": root.get("roxy_plan"), "parts": parts, "gaps": gaps, "primitives": primitives}
+
+plan = json.loads(root.get("roxy_plan") or "{}")
+AXES = {"x": Vector((1, 0, 0)), "y": Vector((0, 1, 0)), "z": Vector((0, 0, 1))}
+motion = []
+for part in plan.get("parts", []):
+    mv = part.get("moves")
+    obj = bpy.data.objects.get(plan["name"] + "_" + part["name"])
+    if not isinstance(mv, dict) or obj is None:
+        continue
+    a = mv.get("axis")
+    axis = (AXES[a.lower().lstrip("+-")] * (-1 if a.startswith("-") else 1)) if isinstance(a, str) else Vector(a).normalized()
+    origin = to_local @ obj.matrix_world.translation
+    group = [g.name for g in [obj] + list(obj.children_recursive) if g.name in meshes]
+    others = [n for n in meshes if n not in group]
+    trees = {n: shapes[n][0] for n in meshes}
+    at_rest = {(g, o) for g in group for o in others if trees[g].overlap(trees[o])}
+    hits, ground = {}, {}
+    lo, hi = mv["range"]
+    for k in range(1, STEPS + 1):
+        for t in (lo * k / STEPS, hi * k / STEPS):
+            if t == 0:
+                continue
+            if mv["type"] == "hinge":
+                m = Matrix.Translation(origin) @ Matrix.Rotation(math.radians(t), 4, axis) @ Matrix.Translation(-origin)
+            else:
+                m = Matrix.Translation(axis * t)
+            for g in group:
+                vs, polys = meshes[g]
+                moved = [m @ v for v in vs]
+                if g not in ground and min(v.z for v in moved) < -0.005 <= min(v.z for v in vs):
+                    ground[g] = t
+                tree = BVHTree.FromPolygons(moved, polys)
+                for o in others:
+                    if (g, o) not in at_rest and (g, o) not in hits and tree.overlap(trees[o]):
+                        hits[(g, o)] = t
+    motion.append({"part": part["name"], "origin": [round(c, 4) for c in origin],
+                   "carries": [c.name for c in obj.children_recursive],
+                   "hits": [[g, o, round(t, 3)] for (g, o), t in hits.items()],
+                   "ground": [[g, round(t, 3)] for g, t in ground.items()]})
+return {"plan": root.get("roxy_plan"), "parts": parts, "gaps": gaps, "primitives": primitives,
+        "motion": motion}
 '''
 
 
 # export_to_unreal(action="export"): write an Unreal-ready FBX of one asset.
 # Moves the asset to the origin and renames its armature only for the export,
-# and always puts both back.
+# and always puts both back. A static asset whose plan has moving parts (doors,
+# lids, drawers) exports each moving part, with what it carries, as its own
+# mesh whose pivot is its hinge, so the game can move it.
 UE_EXPORT = r'''
-import bpy, os, re
+import bpy, json, os, re
 from mathutils import Matrix, Vector
 root = bpy.data.objects.get(ARGS["name"])
 if root is None:
@@ -681,10 +728,20 @@ meshes = [o for o in tree if o.type == "MESH" and not o.hide_render
 if kind == "skeletal":
     meshes += [o for o in bpy.data.objects if o.type == "MESH" and o not in meshes and not o.hide_render
                and any(m.type == "ARMATURE" and m.object == arm for m in o.modifiers)]
-if not meshes:
+plan = json.loads(root.get("roxy_plan") or "{}") if kind == "static" else {}
+movers = []
+for part in plan.get("parts", []):
+    obj = bpy.data.objects.get(plan["name"] + "_" + part["name"])
+    if part.get("moves") and obj is not None and obj in tree:
+        movers.append((part, obj))
+# Each moving part leaves the main mesh with everything under it, unless an outer moving part
+# already took it (a sash in a door goes with the door's mesh... and is exported again on its own).
+moving = {o for _, m in movers for o in [m] + list(m.children_recursive)}
+meshes = [o for o in meshes if o not in moving]
+if not meshes and not movers:
     return {"error": root.name + " has no mesh to export"}
-collisions = [o for o in tree if o.type == "MESH" and re.match(r"^(UCX|UBX|USP|UCP)_", o.name)]
-sockets = [o for o in tree if o.type == "EMPTY" and o.name.startswith("SOCKET_")]
+collisions = [o for o in tree if o.type == "MESH" and re.match(r"^(UCX|UBX|USP|UCP)_", o.name) and o not in moving]
+sockets = [o for o in tree if o.type == "EMPTY" and o.name.startswith("SOCKET_") and o not in moving]
 for o in meshes:
     if any(abs(s - 1) > 1e-4 for s in o.matrix_world.to_scale()):
         warnings.append(o.name + " has unapplied scale; it exports correctly, but apply it for clean pivots")
@@ -698,6 +755,9 @@ out_dir = ARGS.get("output_dir") or (os.path.join(os.path.dirname(bpy.data.filep
 os.makedirs(out_dir, exist_ok=True)
 path = os.path.join(out_dir, asset + ".fbx")
 
+to_local = root.matrix_world.inverted()
+mover_rest = {m.name: (to_local @ m.matrix_world).translation.copy() for _, m in movers}
+saved_basis = {m.name: m.matrix_basis.copy() for _, m in movers}
 saved_matrix = root.matrix_world.copy()
 saved_selection = [o for o in bpy.context.view_layer.objects if o.select_get()]
 saved_active = bpy.context.view_layer.objects.active
@@ -714,10 +774,10 @@ try:
     export = meshes + collisions + sockets + ([arm] if kind == "skeletal" else [])
     for o in bpy.context.view_layer.objects:
         o.select_set(o in export)
-    bpy.context.view_layer.objects.active = arm if kind == "skeletal" else meshes[0]
+    bpy.context.view_layer.objects.active = arm if kind == "skeletal" else (meshes or [movers[0][1]])[0]
     dg = bpy.context.evaluated_depsgraph_get()
     pts, tris, materials = [], 0, []
-    for o in meshes:
+    for o in meshes or [m for _, m in movers]:
         ev = o.evaluated_get(dg)
         pts += [ev.matrix_world @ Vector(c) for c in ev.bound_box]
         me = ev.to_mesh()
@@ -734,10 +794,40 @@ try:
                        primary_bone_axis="Y", secondary_bone_axis="X")
     else:
         options.update(object_types={"MESH", "EMPTY"})
-    bpy.ops.export_scene.fbx(**options)
+    if meshes:
+        bpy.ops.export_scene.fbx(**options)
+    else:
+        path = None
+    moving_out = []
+    for part, m in movers:
+        # The part at the origin, unturned: its origin - the hinge - becomes the FBX pivot.
+        _l, _r, mscale = m.matrix_world.decompose()
+        m.matrix_world = Matrix.LocRotScale(None, None, mscale)
+        bpy.context.view_layer.update()
+        group = [m] + list(m.children_recursive)
+        parts_out = [o for o in group if o.type == "MESH" and not o.hide_render]
+        for o in bpy.context.view_layer.objects:
+            o.select_set(o in group and o.type in {"MESH", "EMPTY"})
+        bpy.context.view_layer.objects.active = m
+        sub = asset + "_" + re.sub(r"[^A-Za-z0-9_]+", "_", part["name"])
+        sub_path = os.path.join(out_dir, sub + ".fbx")
+        dg = bpy.context.evaluated_depsgraph_get()
+        mpts = [o.evaluated_get(dg).matrix_world @ Vector(c) for o in parts_out for c in o.evaluated_get(dg).bound_box]
+        if parts_out:
+            bpy.ops.export_scene.fbx(**dict(options, filepath=sub_path, object_types={"MESH", "EMPTY"}))
+        rest = mover_rest[m.name]
+        moving_out.append({"part": part["name"], "asset": sub, "file": sub_path if parts_out else None,
+                           "moves": part["moves"], "pivot_m": [round(c, 4) for c in rest],
+                           "bounds_m": [[min(p[i] for p in mpts) for i in range(3)],
+                                        [max(p[i] for p in mpts) for i in range(3)]] if mpts else None,
+                           "carries": [o.name for o in group[1:]]})
+        m.matrix_basis = saved_basis[m.name]
+        bpy.context.view_layer.update()
 finally:
     for o, name in reversed(renamed):
         o.name = name
+    for _, m in movers:
+        m.matrix_basis = saved_basis[m.name]
     root.matrix_world = saved_matrix
     for o in bpy.context.view_layer.objects:
         o.select_set(o in saved_selection)
@@ -745,5 +835,5 @@ finally:
     bpy.context.view_layer.update()
 return {"name": root.name, "asset": asset, "kind": kind, "file": path, "bounds_m": [lo, hi],
         "triangles": tris, "materials": materials, "sockets": [s.name for s in sockets],
-        "collisions": [c.name for c in collisions], "warnings": warnings}
+        "collisions": [c.name for c in collisions], "warnings": warnings, "moving": moving_out}
 '''

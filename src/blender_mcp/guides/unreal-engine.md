@@ -35,7 +35,8 @@ Unique names, no spaces, ASCII only (Japanese names break some tools and paths).
 - Apply scale and rotation on everything before export (`transform_apply`), or Unreal inherits
   odd scales and rotations.
 - The pivot in Unreal is the FBX origin. Export each asset sitting at the world origin with its
-  pivot where it should be: bottom centre for props and furniture, the hinge for doors, the
+  pivot where it should be: bottom centre for props and furniture, the hinge for doors (see
+  Moving parts), the
   corner for modular kit pieces (`get_guide("level-design")`).
 - Keep Blender's default FBX axes (forward -Z, up Y); Unreal converts them. Blender +X stays +X
   and up stays up, but Y flips: Blender's -Y (an object's front) becomes Unreal's +Y. If an asset
@@ -68,6 +69,26 @@ for look development and previews.
   triangles at most). Export them together with the mesh, at the same transform.
 - Sockets: an empty named `SOCKET_<Name>` parented to the mesh, at the attach point and
   orientation (a lamp's bulb, a weapon's grip, a sign's mount). Include empties in the export.
+
+## Moving parts: doors, lids, drawers
+
+A static mesh can't move part of itself. Anything the player opens is its own mesh with its pivot
+on its hinge (or its runner for a drawer), placed as a child component and turned in a Blueprint:
+
+- Model the moving parts with `"moves"` in their `model_plan` (`get_guide("modeling")`, Parts that
+  move) and run `verify` until they clear everything across their range.
+- `export_to_unreal` then writes the fixed parts as `SM_<Name>` and each moving part, with what
+  it carries, as `SM_<Name>_<Part>` whose origin is the hinge. Its reply gives each part's
+  location relative to `SM_<Name>` in centimetres and the rotation to animate: a hinge about
+  Blender's z is Yaw (sign reversed by the Y flip: Blender -100 degrees is Yaw +100), about x
+  Roll, about y Pitch (sign reversed); a slide is a relative location.
+- In Unreal: an Actor Blueprint with `SM_<Name>` as the root, each moving part as a child Static
+  Mesh Component at that location, a Timeline (0 to 1) driving its relative rotation or location
+  from closed to open, and an interaction (overlap or input) that plays and reverses it.
+- Give moving parts their own simple collision so an open door blocks the player and a closed
+  one doesn't leave a gap; keep collision off the 2-3 mm clearance so it doesn't stick.
+- For a skeletal approach instead (many moving parts, or animation authored in Blender), parent
+  each rigid part to a bone at its hinge (`get_guide("rigging")`) and export as skeletal.
 
 ## Exporting: use export_to_unreal
 

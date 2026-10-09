@@ -91,3 +91,26 @@ def test_verify_needs_an_export_first(export):
 def test_bad_kind_never_reaches_blender(export):
     assert _tool(name="Table", kind="vehicle").startswith("Error: kind must be")
     assert export == []
+
+
+@pytest.mark.parametrize("moves, expected", [
+    ({"type": "hinge", "axis": "z", "range": [-100, 0]}, "animate relative rotation Yaw from 0 to 100 degrees"),
+    ({"type": "hinge", "axis": "-z", "range": [-100, 0]}, "Yaw from -100 to 0 degrees"),
+    ({"type": "hinge", "axis": "x", "range": [0, 80]}, "Roll from 0 to 80 degrees"),
+    ({"type": "hinge", "axis": "y", "range": [0, 80]}, "Pitch from -80 to 0 degrees"),
+    ({"type": "slide", "axis": "y", "range": [-0.4, 0]}, "slides from relative location (0.0, 40.0, 0.0) cm to (0.0, 0.0, 0.0) cm"),
+])
+def test_moving_parts_are_described_in_unreal_terms(moves, expected):
+    text = ue.unreal_motion({"moves": moves, "pivot_m": [-0.39, -0.058, 0.0]})
+    assert text.startswith("place at (-39.0, 5.8, 0.0) cm;"), text
+    assert expected in text, text
+
+
+def test_export_reply_lists_the_moving_parts():
+    result = {"name": "Door", "kind": "static", "asset": "SM_Door", "file": "/x/SM_Door.fbx", "triangles": 10,
+              "expected_bounds_cm": ue.blender_to_unreal_cm([0, 0, 0], [1, 1, 1]),
+              "moving": [{"part": "Leaf", "asset": "SM_Door_Leaf", "file": "/x/SM_Door_Leaf.fbx",
+                          "moves": {"type": "hinge", "axis": "z", "range": [-100, 0]}, "pivot_m": [-0.39, -0.058, 0]}]}
+    text = ue.format_export(result, "/Game/Roxy")
+    assert "- SM_Door_Leaf (/x/SM_Door_Leaf.fbx): place at (-39.0, 5.8, 0.0) cm; animate relative rotation Yaw" in text
+    assert "Import the moving parts the same way" in text

@@ -91,6 +91,10 @@ mechanical motion, `"CONSTANT"` for stepped/blocking.
 - Push finished actions to NLA strips (`track = ad.nla_tracks.new(); track.strips.new(name, start, action)`)
   to layer or sequence clips (walk, then wave).
 - Name actions `Character_Walk`, `Door_Open`; game engines import them by name.
+- Doors, lids and drawers: key the moving part's rotation or location about the origin `build`
+  put on its hinge, within its plan range, and run `model_plan(action="verify")` - it moves the
+  part through the range and reports anything it would cut through (`get_guide("modeling")`,
+  Parts that move).
 - Cameras: animate the camera or a parent empty; use a Track To constraint on a target empty for
   smooth follow shots. Keep focal-length changes slow.
 

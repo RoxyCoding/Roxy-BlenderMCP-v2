@@ -76,6 +76,10 @@ Break the subject into the parts it is built from, from large to small:
 Each part is its own object named `<Subject>_<Part>`, so it can be checked, textured and changed
 separately, and the subject is assembled from them (`roxy.assemble`).
 
+Mark what **moves**: doors, lids, drawers, flaps, windows, wheels, levers, anything a player or
+an animation will open, turn or slide. Each is its own part with everything fixed to it, and how
+it moves is part of the plan (see "Parts that move" below).
+
 ### 4. Give every part its real form
 
 A box, cylinder, sphere or cone is where a part starts, not what it is. Before choosing a
@@ -195,6 +199,9 @@ The addon provides these as `roxy.<name>` inside execute_blender_code (addon pro
 - `roxy.cylinder(name, radius, depth, location=(0, 0, 0), segments=32, bevel=0.001, parent=None, collection=None, origin='bottom')` - An upright cylinder (legs, poles, pipes, knobs).
 - `roxy.extrude_profile(name, points, depth, location=(0, 0, 0), bevel=0.001, parent=None, collection=None)` - Extrude a closed 2D outline [(x, z), ...] in metres along +Y by depth: mouldings, brackets, frames, signs, anything with a custom silhouette.
 - `roxy.cut(obj, cutter)` - Subtract cutter from obj (holes, slots, recesses) and delete the cutter.
+- `roxy.set_pivot(obj, pivot)` - Move obj's origin to pivot (metres, in its parent's space) without moving its mesh: the hinge a door, lid or flap turns on.
+- `roxy.carry(holder, obj)` - Parent obj to holder where it stands, so it moves with it: a handle on its door, a knob on its drawer.
+- `roxy.limit_motion(obj, moves)` - Limit Rotation or Location constraints that keep a moving part in its plan range while you animate it.
 - `roxy.uv_world_box(obj, space='world')` - UVs in metres, projected per face along its main axis: a texture with Mapping Scale 1/size tiles at real size on every object built this way, whatever its dimensions.
 - `roxy.assemble(name, parts, location=(0, 0, 0), collection=None)` - Group parts under an empty, so the whole object moves, rotates and exports as one.
 - `roxy.panel_with_openings(name, size, openings, location=(0, 0, 0), bevel=0.002, parent=None, collection=None)` - A board or wall (width x, thickness y, height z) with rectangular openings, each (x_centre, z_bottom, width, height) in metres from the panel's bottom centre: walls with doors and windows, doors with glazing, appliance fronts, furniture sides, signs.
@@ -237,6 +244,39 @@ table = roxy.assemble("Table", [top, *legs, *aprons])
   count from the maximum riser), `roxy.sweep` for the handrail at 850 mm above the step nosings.
 - **A potted plant** (nature): pot by `roxy.lathe`, soil disc, stems by `roxy.sweep` with small radii, leaves
   as subdivided `roxy.extrude_profile` outlines with a slight bend; or a Poly Haven plant in a modelled pot.
+
+## Parts that move
+
+Anything that will be animated - in a game above all - must move like the real thing without
+breaking: turn about its real hinge, carry what is fixed to it, and pass everything else with
+the clearance the real one has. Get this wrong and the door swings about its middle, the handle
+stays hanging in the air, or the leaf cuts through the frame.
+
+- **Plan the motion.** Give the part `"moves"`: `{"type": "hinge", "axis": "z", "pivot": [x, y, z],
+  "range": [-100, 0]}` (degrees) or `{"type": "slide", "axis": "y", "range": [-0.4, 0]}` (metres).
+  Build it at rest, closed, so the range includes 0; the sign says which way it goes (about +z,
+  positive turns counter-clockwise seen from above). The check sweeps it through the range and
+  reports anything it runs into, so a wrong pivot or direction shows before you build.
+- **The pivot is where the real hinge is.** Hinges sit on the edge where the knuckles are: a
+  door on the face it opens towards, a lid on the back edge of its top, a flap on its bottom
+  edge - not in the middle of the thickness, which swings the far corner through the frame.
+  Drawers and sliding doors slide along their runners or track.
+- **Clearance like the real thing.** A door leaf 2-3 mm from its frame all round, a drawer front
+  2-3 mm from its neighbours, a lid 1-2 mm. Faces that are this close by design are clearance,
+  and the flush check ignores them between a moving part and its surround.
+- **What is fixed to it moves with it.** `rests_on` the moving part - a handle, a knob, glass,
+  a hinge leaf on the door side - and `build` parents it to the moving part. Detail you add
+  later: `roxy.carry(door, handle)`. The frame-side hinge leaf rests on the frame.
+- **The origin is the pivot.** `build` puts each moving part's origin on its hinge
+  (`roxy.set_pivot` for parts you make yourself) and adds a Limit Rotation/Location constraint
+  (`roxy.limit_motion`) so posing it in Blender stays in range. A game engine turns a mesh about
+  its origin and nowhere else.
+- **Check it moving.** `model_plan(action="verify")` moves each moving part through its range
+  with its real meshes and children, as the game will, and reports collisions, an origin off
+  the hinge, and detail that would stay behind. Also pose it open in Blender and `look` at it.
+- **Export it to move.** `export_to_unreal` exports each moving part as its own mesh with its
+  pivot on the hinge and says where to place it and how to rotate it (`get_guide("unreal-engine")`,
+  Moving parts). A moving part merged into the rest of the mesh can never open.
 
 ## Detail and geometry
 

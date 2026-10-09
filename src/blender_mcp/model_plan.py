@@ -31,6 +31,12 @@ MAX_LISTED = 12
 MIN_FEATURES = 3
 SHAPES = ("box", "cylinder", "custom")
 GROUND = "ground"
+MOVES = ("hinge", "slide")
+AXES = {"x": (1.0, 0.0, 0.0), "y": (0.0, 1.0, 0.0), "z": (0.0, 0.0, 1.0)}
+# A hinge's pivot further than this from its part can't be on the part's edge.
+PIVOT_REACH = 0.05
+# Poses sampled across a moving part's range when looking for collisions.
+MOTION_STEPS = 24
 
 
 @dataclass
@@ -248,6 +254,185 @@ def _features(plan: dict, report: Report) -> None:
             "at R40, no welds showing\"). Name the specific kind, not the category.")
 
 
+# ------------------------------------------------------------------ moving parts
+#
+# A part with "moves" turns on a hinge or slides along an axis in the game: a door, a lid, a
+# drawer, a window sash. Everything that rests on it moves with it. The model is built at its
+# rest pose (range includes 0), and nothing it carries may run into the rest of the subject
+# anywhere across its range.
+
+def _axis(value) -> tuple[float, float, float] | None:
+    if isinstance(value, str):
+        sign, base = (-1.0 if value.startswith("-") else 1.0), AXES.get(value.lower().lstrip("+-"))
+        return tuple(sign * c for c in base) if base else None
+    if isinstance(value, (list, tuple)) and len(value) == 3 and all(isinstance(v, (int, float)) for v in value):
+        n = math.sqrt(sum(v * v for v in value))
+        return tuple(v / n for v in value) if n > 1e-9 else None
+    return None
+
+
+def moving_groups(plan: dict) -> dict[str, list[str]]:
+    """Each moving part and the parts it carries (whatever rests on it, directly or not)."""
+    parts = plan["parts"]
+    groups = {}
+    for p in parts:
+        if not p.get("moves"):
+            continue
+        group = [p["name"]]
+        changed = True
+        while changed:
+            changed = False
+            for q in parts:
+                if q["name"] not in group and any(s in group for s in _supports(q)):
+                    group.append(q["name"])
+                    changed = True
+        groups[p["name"]] = group
+    return groups
+
+
+def _check_moves(name: str, part: dict, report: Report) -> None:
+    mv = part["moves"]
+    if not isinstance(mv, dict) or mv.get("type") not in MOVES:
+        report.errors.append(f"{name}: moves must be {{\"type\": \"hinge\" or \"slide\", \"axis\", \"range\", "
+                             "and for a hinge \"pivot\"}.")
+        return
+    if _axis(mv.get("axis")) is None:
+        report.errors.append(f"{name}: moves.axis must be \"x\", \"y\", \"z\" (or \"-z\"...) or a direction [x, y, z].")
+    rng = mv.get("range")
+    unit = "degrees" if mv["type"] == "hinge" else "metres"
+    if (not isinstance(rng, (list, tuple)) or len(rng) != 2 or any(not isinstance(v, (int, float)) for v in rng)
+            or not rng[0] <= 0 <= rng[1] or rng[0] == rng[1]):
+        report.errors.append(f"{name}: moves.range must be [from, to] in {unit} around the rest pose the "
+                             "model is built in, so it includes 0: [0, 100] for a door that opens 100 degrees.")
+    if mv["type"] == "hinge":
+        pivot = mv.get("pivot")
+        if not isinstance(pivot, (list, tuple)) or len(pivot) != 3:
+            report.errors.append(f"{name}: a hinge needs moves.pivot [x, y, z], a point on its turning axis "
+                                 "(the hinge knuckles), in the plan's coordinates.")
+        elif box_gap(part_box(part), (tuple(pivot), tuple(pivot))) > PIVOT_REACH:
+            report.errors.append(f"{name}: its hinge pivot is {_gap_text(box_gap(part_box(part), (tuple(pivot), tuple(pivot))))} "
+                                 "from the part. A hinge sits on the part's edge, where its knuckles are.")
+
+
+def pose(mv: dict, t: float, pivot=None):
+    """The transform of a moving part at t (degrees or metres along its range), as a function
+    on points, and the same on directions."""
+    axis = _axis(mv["axis"])
+    if mv["type"] == "slide":
+        d = tuple(a * t for a in axis)
+        return (lambda p: tuple(p[i] + d[i] for i in range(3))), (lambda v: tuple(v))
+    c = tuple(pivot if pivot is not None else mv["pivot"])
+    th = math.radians(t)
+    cos, sin = math.cos(th), math.sin(th)
+    k = axis
+
+    def rot(v):
+        kv = sum(k[i] * v[i] for i in range(3))
+        cross = (k[1] * v[2] - k[2] * v[1], k[2] * v[0] - k[0] * v[2], k[0] * v[1] - k[1] * v[0])
+        return tuple(v[i] * cos + cross[i] * sin + k[i] * kv * (1 - cos) for i in range(3))
+
+    return (lambda p: tuple(r + c[i] for i, r in enumerate(rot(tuple(p[j] - c[j] for j in range(3)))))), rot
+
+
+def _obb(box: Box, point=None, direction=None):
+    centre = tuple((box[0][i] + box[1][i]) / 2 for i in range(3))
+    half = tuple((box[1][i] - box[0][i]) / 2 for i in range(3))
+    axes = [AXES[a] for a in "xyz"]
+    if point:
+        centre, axes = point(centre), [direction(a) for a in axes]
+    return centre, axes, half
+
+
+def _obbs_overlap(a, b, tol: float = CONTACT_TOL) -> bool:
+    """Separating-axis test between two oriented boxes; overlaps shallower than tol don't count,
+    so parts that only touch (a door against its stop, a drawer on its runner) are clear."""
+    (ca, aa, ha), (cb, ab, hb) = a, b
+    t = tuple(cb[i] - ca[i] for i in range(3))
+    dot = lambda u, v: sum(u[i] * v[i] for i in range(3))
+    cross = lambda u, v: (u[1] * v[2] - u[2] * v[1], u[2] * v[0] - u[0] * v[2], u[0] * v[1] - u[1] * v[0])
+    candidates = aa + ab + [cross(u, v) for u in aa for v in ab]
+    for axis in candidates:
+        n = math.sqrt(dot(axis, axis))
+        if n < 1e-9:
+            continue
+        axis = tuple(c / n for c in axis)
+        ra = sum(ha[i] * abs(dot(aa[i], axis)) for i in range(3))
+        rb = sum(hb[i] * abs(dot(ab[i], axis)) for i in range(3))
+        if abs(dot(t, axis)) > ra + rb - tol:
+            return False
+    return True
+
+
+def _sweep(plan: dict, boxes: dict[str, Box], report: Report) -> None:
+    """Move each moving part through its range and report what its group runs into."""
+    by_name = {p["name"]: p for p in plan["parts"]}
+    for mover, group in moving_groups(plan).items():
+        mv = by_name[mover]["moves"]
+        others = [n for n in boxes if n not in group]
+        at_rest = {(g, o) for g in group for o in others if _obbs_overlap(_obb(boxes[g]), _obb(boxes[o]))}
+        lo, hi = mv["range"]
+        amount = (lambda t: f"{t:.0f} degrees") if mv["type"] == "hinge" else (lambda t: f"{t * 1000:.0f} mm")
+        hits: dict[tuple[str, str], float] = {}
+        ground: dict[str, float] = {}
+        for k in range(1, MOTION_STEPS + 1):
+            for t in (lo * k / MOTION_STEPS, hi * k / MOTION_STEPS):
+                if t == 0:
+                    continue
+                point, direction = pose(mv, t)
+                for g in group:
+                    moved = _obb(boxes[g], point, direction)
+                    centre, axes, half = moved
+                    bottom = centre[2] - sum(half[i] * abs(axes[i][2]) for i in range(3))
+                    if bottom < -CONTACT_TOL and g not in ground:
+                        ground[g] = t
+                    for o in others:
+                        if (g, o) not in at_rest and (g, o) not in hits and _obbs_overlap(moved, _obb(boxes[o])):
+                            hits[(g, o)] = t
+        for (g, o), t in sorted(hits.items(), key=lambda x: abs(x[1]))[:MAX_LISTED]:
+            who = g if g == mover else f"{g} (carried by {mover})"
+            report.errors.append(f"{who} runs into {o} at {amount(t)} of its {mv['type']}. Move the pivot to where "
+                                 "the real hinge or runner is, give it the clearance the real one has, or "
+                                 "shorten the range.")
+        for g, t in sorted(ground.items()):
+            report.errors.append(f"{g} goes through the ground at {amount(t)} of {mover}'s {mv['type']}.")
+
+
+def _verify_motion(plan: dict, motion: list, strip, touch: dict, planned: dict, report: Report) -> None:
+    """A moving part must turn about its hinge, carry everything fixed to it, and clear the
+    rest of the subject across its whole range - with its real meshes, as the game will move it."""
+    groups = moving_groups(plan)
+    for m in motion:
+        mover = m["part"]
+        mv = planned[mover]["moves"]
+        amount = (lambda t: f"{t:.0f} degrees") if mv["type"] == "hinge" else (lambda t: f"{t * 1000:.0f} mm")
+        if mv["type"] == "hinge" and mv.get("pivot"):
+            # Any point on the hinge axis will do; only the distance off the axis matters.
+            axis = _axis(mv["axis"])
+            d = [m["origin"][i] - mv["pivot"][i] for i in range(3)]
+            off = math.sqrt(max(0.0, sum(c * c for c in d) - sum(d[i] * axis[i] for i in range(3)) ** 2))
+            if off > CONTACT_TOL:
+                report.errors.append(f"{mover}: its origin is {_gap_text(off)} off its hinge axis, and a game "
+                                     "engine turns it about its origin. roxy.set_pivot(obj, pivot) moves the "
+                                     "origin without moving the mesh.")
+        carried = {strip(c) for c in m["carries"]}
+        loose = [p for p in groups.get(mover, [])[1:] if p not in carried]
+        loose += sorted(n for n in touch if n not in planned and n not in carried
+                        and touch[n] and touch[n] <= set(groups.get(mover, [])) | carried)
+        for p in loose:
+            report.errors.append(f"{p} is fixed to {mover} but not parented to it, so it stays behind when "
+                                 f"{mover} moves. roxy.carry({mover}, {p}).")
+        for g, o, t in sorted(m["hits"], key=lambda h: abs(h[2]))[:MAX_LISTED]:
+            g, o = strip(g), strip(o)
+            who = g if g == mover else f"{g} (carried by {mover})"
+            report.errors.append(f"{who} runs into {o} at {amount(t)} of its {mv['type']}. Move the pivot to "
+                                 "where the real hinge or runner is, give it the clearance the real one has, "
+                                 "or shorten the range.")
+        for g, t in m["ground"]:
+            report.errors.append(f"{strip(g)} goes through the ground at {amount(t)} of {mover}'s {mv['type']}.")
+        if not m["hits"] and not m["ground"]:
+            report.notes.append(f"{mover} moves through its whole range {mv['range']} without hitting anything.")
+
+
 def check(plan: dict) -> Report:
     """Check a plan's structure before anything is built."""
     report = Report()
@@ -289,6 +474,8 @@ def check(plan: dict) -> Report:
             report.warnings.append(f"{name}: a cylinder's size is [diameter, diameter, height]; x and y differ.")
         if shape in ("box", "cylinder"):
             _form(name, part, psize, report)
+        if part.get("moves") is not None:
+            _check_moves(name, part, report)
         boxes[name] = part_box(part)
 
     bare = _primitives(plan)
@@ -309,6 +496,7 @@ def check(plan: dict) -> Report:
     _structure(boxes, plan, report, built=False, gap=gap)
     _overlaps(boxes, plan, report)
     _near_misses(list(boxes), gap, report)
+    _sweep(plan, boxes, report)
 
     lo = [min(b[0][i] for b in boxes.values()) for i in range(3)]
     hi = [max(b[1][i] for b in boxes.values()) for i in range(3)]
@@ -321,6 +509,10 @@ def check(plan: dict) -> Report:
                                "bottom centre of the whole subject.")
     custom = [p["name"] for p in plan["parts"] if p.get("shape") == "custom"]
     report.notes.append(f"{len(boxes)} parts, spanning {span[0]:.3f} x {span[1]:.3f} x {span[2]:.3f} m.")
+    for mover, group in moving_groups(plan).items():
+        mv = by_name[mover]["moves"]
+        report.notes.append(f"{mover} {'turns' if mv['type'] == 'hinge' else 'slides'} through {mv['range']} "
+                            f"{'degrees' if mv['type'] == 'hinge' else 'metres'}, carrying {', '.join(group)}.")
     if custom:
         report.notes.append(f"Built by you after build: {', '.join(custom)} (name each <Name>_<Part>, "
                             "parent=the assembly, location=its 'at').")
@@ -328,14 +520,15 @@ def check(plan: dict) -> Report:
 
 
 def verify(plan: dict, actual: dict[str, Box], gaps: list | None = None,
-           primitives: list | None = None) -> Report:
+           primitives: list | None = None, motion: list | None = None) -> Report:
     """Compare what was built (boxes in the assembly's own space) against its plan.
 
     gaps are [part, part, metres] between the real surfaces of the pairs that come close;
     without them (an older server script) the boxes stand in for the surfaces. Detail added
     after the plan is checked too: everything must be fixed to something that is held up.
     primitives are [part, kind] for the parts whose mesh is still a stand-in shape (box,
-    prism, cone, sphere).
+    prism, cone, sphere). motion is what Blender found moving each moving part through its
+    range: its origin, what is parented under it, and what it ran into.
     """
     report = Report()
     prefix = plan["name"] + "_"
@@ -404,7 +597,9 @@ def verify(plan: dict, actual: dict[str, Box], gaps: list | None = None,
                 report.errors.append(f"{n}: touches only {', '.join(sorted(touch[n]))}, which "
                                      "never connect to the structure - the group floats.")
     _near_misses(names, gap, report)
-    _not_flush(boxes, pairs, report)
+    # A moving part's gap to what surrounds it is its clearance, not a careless step.
+    moving = {n for group in moving_groups(plan).values() for n in group}
+    _not_flush(boxes, [(a, b) for a, b in pairs if (a in moving) == (b in moving)], report)
     plain = {n for n, p in planned.items() if p.get("plain")}
     left = sorted((strip(n), kind) for n, kind in primitives or [] if strip(n) in boxes and strip(n) not in plain)
     if left:
@@ -414,6 +609,7 @@ def verify(plan: dict, actual: dict[str, Box], gaps: list | None = None,
             "the subject only something like the real thing. Rebuild each in its real form "
             "(roxy.rounded_box, rounded_cylinder, loft, lathe, extrude_profile, sweep; roxy.fuse where it "
             "is one piece), or mark it \"plain\": true in the plan if the real thing is exactly that shape.")
+    _verify_motion(plan, motion or [], strip, touch, planned, report)
     if plan.get("features"):
         report.notes.append("Confirm each identifying feature close up with look, and fix any that doesn't "
                             "read: " + "; ".join(plan["features"]) + ".")

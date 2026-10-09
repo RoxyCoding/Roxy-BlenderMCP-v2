@@ -266,3 +266,107 @@ def test_verify_uses_the_plan_stored_on_the_assembly(monkeypatch):
 def test_every_tool_description_fits_claude_codes_cap():
     for tool in asyncio.run(server.mcp.list_tools()):
         assert len(tool.description or "") < 2048, tool.name
+
+
+# ------------------------------------------------------------------ moving parts
+
+def _door(pivot_y=-0.058, rng=(-100, 0), **moves):
+    """An interior door: 30 mm jambs, a 36 mm leaf with 3 mm gaps hinged on its front left edge."""
+    return {
+        "name": "Door", "purpose": "Japanese interior hinged door", "size": [0.84, 0.138, 2.03],
+        "features": ["flush leaf 36 mm thick", "3 mm gap round the leaf", "lever handle at 900 mm"],
+        "parts": [
+            {"name": "Jamb_L", "size": [0.03, 0.12, 2.03], "at": [-0.405, 0, 0], "rests_on": ["ground"], "plain": True},
+            {"name": "Jamb_R", "size": [0.03, 0.12, 2.03], "at": [0.405, 0, 0], "rests_on": ["ground"], "plain": True},
+            {"name": "Head", "size": [0.78, 0.12, 0.03], "at": [0, 0, 2.0], "rests_on": ["Jamb_L", "Jamb_R"],
+             "plain": True},
+            {"name": "Leaf", "size": [0.774, 0.036, 1.987], "at": [0, -0.04, 0.01], "radius": 0.002,
+             "rests_on": ["Jamb_L"], "moves": dict({"type": "hinge", "axis": "z", "pivot": [-0.39, pivot_y, 0],
+                                                    "range": list(rng)}, **moves)},
+            {"name": "Handle", "shape": "cylinder", "size": [0.02, 0.02, 0.06], "at": [0.33, -0.068, 0.9],
+             "radius": 0.003, "rests_on": ["Leaf"]},
+        ],
+    }
+
+
+def test_a_door_hinged_on_its_real_edge_clears_its_frame():
+    report = model_plan.check(_door())
+    assert report.ok, report.text("plan")
+    assert model_plan.moving_groups(_door()) == {"Leaf": ["Leaf", "Handle"]}
+    assert any("Leaf turns through [-100, 0] degrees, carrying Leaf, Handle." in n for n in report.notes)
+
+
+@pytest.mark.parametrize("plan, expected", [
+    (_door(pivot_y=-0.04), "Leaf runs into Jamb_L at -29 degrees of its hinge"),     # hinge mid-thickness
+    (_door(rng=(0, 100)), "Leaf runs into Jamb_L at 17 degrees of its hinge"),       # opening into the jamb
+    (_door(rng=(10, 100)), "moves.range must be [from, to]"),
+    (_door(axis="w"), "moves.axis must be"),
+    (_door(pivot=[-1.0, -0.058, 0]), "its hinge pivot is 613 mm from the part"),
+    (_door(type="spin"), "moves must be"),
+])
+def test_moving_mistakes_are_errors(plan, expected):
+    errors = model_plan.check(plan).errors
+    assert any(expected in e for e in errors), errors
+
+
+def test_a_drawer_that_slides_into_the_back_panel_is_caught():
+    plan = {
+        "name": "Chest", "purpose": "one-drawer chest", "size": [0.5, 0.45, 0.3],
+        "features": ["a", "b", "c"],
+        "parts": [
+            {"name": "Carcass", "size": [0.5, 0.42, 0.3], "at": [0, 0.015, 0], "rests_on": ["ground"], "plain": True},
+            {"name": "Back", "size": [0.5, 0.03, 0.3], "at": [0, 0.21, 0], "rests_on": ["ground"], "plain": True},
+            {"name": "Drawer", "size": [0.46, 0.4, 0.2], "at": [0, -0.025, 0.05], "radius": 0.002,
+             "rests_on": ["Carcass"], "moves": {"type": "slide", "axis": "y", "range": [-0.35, 0.05]}},
+        ],
+    }
+    errors = model_plan.check(plan).errors
+    assert any("Drawer runs into Back at 25 mm of its slide" in e for e in errors), errors
+
+
+def test_the_tool_description_example_cabinet_passes():
+    plan = {"name": "Cabinet", "purpose": "kitchen wall cabinet, one door", "size": [0.6, 0.35, 0.7],
+            "features": ["door overlays the carcass 18 mm", "2 mm gap round the door", "bar handle"],
+            "parts": [
+                {"name": "Body", "shape": "box", "size": [0.6, 0.33, 0.7], "at": [0, 0.01, 0],
+                 "radius": 0.002, "rests_on": ["ground"]},
+                {"name": "Door", "shape": "box", "size": [0.596, 0.018, 0.696], "at": [0, -0.164, 0.002],
+                 "radius": 0.002, "rests_on": ["Body"], "moves": {"type": "hinge", "axis": "z",
+                 "pivot": [-0.298, -0.173, 0], "range": [-110, 0]}}]}
+    report = model_plan.check(plan)
+    assert report.ok, report.text("plan")
+
+
+def _motion(**changes):
+    entry = {"part": "Leaf", "origin": [-0.39, -0.058, 0.0], "carries": ["Door_Handle"], "hits": [], "ground": []}
+    entry.update(changes)
+    return [entry]
+
+
+def test_verify_accepts_a_door_that_moves_cleanly():
+    plan = _door()
+    report = model_plan.verify(plan, _built(plan), motion=_motion())
+    assert report.ok, report.text("verify")
+    assert any("Leaf moves through its whole range [-100, 0] without hitting anything" in n for n in report.notes)
+
+
+def test_verify_catches_a_door_that_would_break_in_a_game():
+    plan = _door()
+    actual = _built(plan)
+    actual["Door_Knob"] = [[0.3, -0.078, 1.2], [0.32, -0.058, 1.22]]     # stuck on the leaf, not parented
+    motion = _motion(origin=[0.0, -0.04, 0.0], carries=[], hits=[["Door_Leaf", "Door_Jamb_L", -12.5]],
+                     ground=[["Door_Handle", -40]])
+    errors = model_plan.verify(plan, actual, motion=motion).errors
+    assert any("Leaf: its origin is 390 mm off its hinge axis" in e for e in errors), errors
+    assert any("Handle is fixed to Leaf but not parented to it" in e for e in errors), errors
+    assert any("Knob is fixed to Leaf but not parented to it" in e for e in errors), errors
+    assert any("Leaf runs into Jamb_L at -12 degrees of its hinge" in e for e in errors), errors
+    assert any("Handle goes through the ground at -40 degrees" in e for e in errors), errors
+
+
+def test_clearance_round_a_moving_part_is_not_a_flush_mistake():
+    plan = _door()
+    gaps = [["Door_Leaf", "Door_Jamb_L", 0.003], ["Door_Leaf", "Door_Head", 0.003], ["Door_Leaf", "Door_Jamb_R", 0.003],
+            ["Door_Head", "Door_Jamb_L", 0.0], ["Door_Head", "Door_Jamb_R", 0.0], ["Door_Handle", "Door_Leaf", 0.0]]
+    warnings = model_plan.verify(plan, _built(plan), gaps, motion=_motion()).warnings
+    assert not any("off flush" in w and "Leaf" in w for w in warnings), warnings

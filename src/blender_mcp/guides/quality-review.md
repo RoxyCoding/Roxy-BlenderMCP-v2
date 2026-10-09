@@ -40,6 +40,8 @@ history, every light has a reason, and nothing gives away that it was assembled 
   (`get_guide("surface-realism")`).
 - Contact: everything rests on something; no floating, no intersecting; contact shadows visible.
   `model_plan(action="verify")` passes with no near-miss warnings left unexplained.
+- Motion: everything that opens, turns or slides pivots on its real hinge, carries what is fixed
+  to it, and clears its surroundings across its whole range; verify reports no collisions.
 - Joints: every part is fixed the way the real thing is (hinge, bracket, bolt into its plate,
   pipe into a fitting); faces meant to be flush are flush. Check each joint close up.
 
@@ -79,6 +81,7 @@ history, every light has a reason, and nothing gives away that it was assembled 
 | Razor-sharp edges, no highlights on corners | Bevel modifier (2-3 segments) + Weighted Normal |
 | Only "something like it" - a generic version of the subject | Name the specific kind and its identifying features (modeling guide, step 1), model each, check each close up |
 | A cylinder bottle, sphere head, cone tree, cube rock | Draw the real side profile (`roxy.lathe`), shape the real silhouette, or use a library asset |
+| A door swinging about its middle, a handle left behind, a lid cutting into its box | Plan `moves` with the real hinge as pivot, parent fixings to the moving part, `model_plan(action="verify")` until it clears its range (modeling guide, Parts that move) |
 | Looks like boxes stuck together | Give each part its real form: taper (`roxy.rounded_box(top=/bottom=)`), real edge radius, crown or curve (`roxy.loft`), profiles (`roxy.extrude_profile`, `roxy.sweep`); `roxy.fuse` what is one piece in reality (modeling guide, step 4) |
 | Plastic look everywhere | Vary roughness with a texture or noise; real materials from Poly Haven |
 | One flat colour per object | Poly Haven texture, or noise/AO-driven colour variation |

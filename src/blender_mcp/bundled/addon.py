@@ -4498,8 +4498,91 @@ def build(plan):
             obj = cylinder(part_name, sx / 2, sz, at, bevel=bevel, parent=root)
         uv_world_box(obj, space="local")
         made.append(obj.name)
+    # Moving parts turn about their hinge and carry what rests on them: pivots first (in the
+    # assembly's space), then the hierarchy, then the limits on the final local transforms.
+    part_obj = lambda n: bpy.data.objects.get(f"{name}_{n}")
+    movers = [p for p in plan["parts"] if p.get("moves") and part_obj(p["name"])]
+    for part in movers:
+        set_pivot(part_obj(part["name"]), part["moves"].get("pivot") or part["at"])
+    for part_name, holder in _carried_by(plan).items():
+        if part_obj(part_name) and part_obj(holder):
+            carry(part_obj(holder), part_obj(part_name))
+    for part in movers:
+        limit_motion(part_obj(part["name"]), part["moves"])
     root["roxy_plan"] = json.dumps(plan)
     return root
+
+
+def _carried_by(plan):
+    """{part: the part it moves with} for every part that rests on a moving part, directly or
+    through other parts (a handle on a door, glass in a sash in a door)."""
+    supports = {p["name"]: [p["rests_on"]] if isinstance(p.get("rests_on"), str) else list(p.get("rests_on") or [])
+                for p in plan["parts"]}
+    moving = {p["name"] for p in plan["parts"] if p.get("moves")}
+    out = {}
+    changed = True
+    while changed:
+        changed = False
+        for part, sups in supports.items():
+            holder = next((s for s in sups if s in moving and s != part), None)
+            if holder and part not in out:
+                out[part] = holder
+                moving.add(part)
+                changed = True
+    return out
+
+
+def set_pivot(obj, pivot):
+    """Move obj's origin to pivot (in its parent's space, metres) without moving its mesh: the
+    hinge a door, lid or flap turns on in a game engine, and the point it rotates about here."""
+    shift = Vector(pivot) - obj.location
+    obj.data.transform(Matrix.Translation(-shift))
+    for child in obj.children:
+        child.location -= shift
+    obj.location = Vector(pivot)
+    return obj
+
+
+def carry(holder, obj):
+    """Parent obj to holder, keeping it where it is, so it moves with it: a handle on its door,
+    a knob on its drawer, glass in its sash."""
+    bpy.context.view_layer.update()
+    world = obj.matrix_world.copy()
+    obj.parent = holder
+    obj.matrix_parent_inverse = holder.matrix_world.inverted()
+    obj.matrix_world = world
+    return obj
+
+
+def limit_motion(obj, moves):
+    """Keep a moving part to its range while you animate it, from its rest pose: a hinge turns
+    only about its axis, a slide moves only along it. moves is the plan's {"type", "axis",
+    "range"}; an axis given as a direction rather than x/y/z gets no limit."""
+    axis = str(moves.get("axis", "")).lower()
+    sign = -1.0 if axis.startswith("-") else 1.0
+    axis = axis.lstrip("+-")
+    if axis not in ("x", "y", "z"):
+        return obj
+    lo, hi = sorted(sign * v for v in moves["range"])
+    if moves["type"] == "hinge":
+        c = obj.constraints.new("LIMIT_ROTATION")
+        rest = obj.rotation_euler
+        lo, hi = math.radians(lo), math.radians(hi)
+        for a in "xyz":
+            base = getattr(rest, a)
+            setattr(c, f"use_limit_{a}", True)
+            setattr(c, f"min_{a}", base + (lo if a == axis else 0.0))
+            setattr(c, f"max_{a}", base + (hi if a == axis else 0.0))
+    else:
+        c = obj.constraints.new("LIMIT_LOCATION")
+        for a in "xyz":
+            base = getattr(obj.location, a)
+            setattr(c, f"use_min_{a}", True); setattr(c, f"use_max_{a}", True)
+            setattr(c, f"min_{a}", base + (lo if a == axis else 0.0))
+            setattr(c, f"max_{a}", base + (hi if a == axis else 0.0))
+    c.owner_space = "LOCAL"
+    c.name = "Roxy motion range"
+    return obj
 
 '''
 
