@@ -400,3 +400,18 @@ def test_verify_flags_stacked_detail_and_factory_fresh_materials():
     assert any(w.startswith("Factory-fresh materials: Paint.") for w in report.warnings), report.warnings
     aged = model_plan.verify(plan, actual, materials={"Paint": "new", "Steel": "custom"})
     assert not any("Factory-fresh" in w for w in aged.warnings)
+
+
+def test_identical_parts_placed_one_by_one_should_be_geometry_nodes():
+    slats = [{"name": f"Slat_{i}", "size": [0.07, 0.45, 0.02], "at": [-0.315 + i * 0.09, 0, 0.42], "radius": 0.003,
+              "rests_on": ["Frame"]} for i in range(8)]
+    plan = {"name": "Bench", "purpose": "garden bench", "size": [0.7, 0.45, 0.44], "features": ["a", "b", "c"],
+            "parts": [{"name": "Frame", "size": [0.7, 0.45, 0.42], "at": [0, 0, 0], "radius": 0.003,
+                       "rests_on": ["ground"]}] + slats}
+    warnings = model_plan.check(plan).warnings
+    assert any(w.startswith("8 identical parts placed one by one (Slat_0, Slat_1") and "roxy.repeat" in w
+               for w in warnings), warnings
+    # A table's four legs are not a row.
+    assert not any("identical parts" in w for w in model_plan.check(TABLE).warnings)
+    report = model_plan.verify(plan, _built(plan))
+    assert any(w.startswith("8 identical parts placed one by one") for w in report.warnings)

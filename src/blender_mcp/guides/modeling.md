@@ -143,11 +143,32 @@ form.
 | Anything with a custom outline (mouldings, brackets, frames, roofs, signs, rail sections) | `roxy.extrude_profile` |
 | Members along a path (handrails, pipes, frames, cables, bent tubes) | `roxy.sweep` |
 | Stairs, bleachers, stepped bases | `roxy.steps` |
-| Repeats (slats, shelves, tiles, lattices, window rows, fence posts) | Array modifier, or `get_guide("geometry-nodes")` |
+| Rows and grids of one piece (slats, planks, balusters, fence posts, shelves, tiles, window rows, rafters) | `roxy.repeat` (Geometry Nodes; count, step and seed stay editable) |
+| Copies along a path (poles along a road, posts along a curved fence, lamps, rails, cables) | `roxy.instances_along_curve`, `roxy.tube_from_curve` (Geometry Nodes) |
 | Symmetric subjects (vehicles, furniture, faces) | model one half, Mirror modifier |
 | Soft and organic shapes (cushions, bodies, rocks, car body panels) | a low box or profile with Subdivision Surface and a few supporting edge loops |
-| Many small scattered things (stones, leaves, debris, grass) | scatter (`get_guide("environment-art")`) |
+| Many small scattered things (stones, leaves, debris, grass) | `roxy.scatter` (Geometry Nodes, `get_guide("environment-art")`) |
 | Ground and terrain | subdivided plane with Displace (environment-art) |
+
+### Geometry Nodes or by hand
+
+Use Geometry Nodes (`get_guide("geometry-nodes")`) wherever the shape follows a rule rather than
+being one-off - it stays editable, and one node group replaces dozens of hand-placed objects:
+
+| Geometry Nodes | By hand (mesh helpers) |
+|---|---|
+| The same piece repeated in a row, grid or ring: slats, balusters, tiles, louvres, keys, bolts round a flange | A one-off part: a casing, a seat, a door, a bottle |
+| Copies following a path: posts, poles, rails, cables, kerbs, chains | A few parts that only happen to match (a table's four legs) |
+| Count, spacing or size the user may want to change later | Shapes defined by their exact outline or profile |
+| Many small things spread over a surface: gravel, leaves, grass, debris, rivets | Anything that moves on its own in a game (doors, lids): its own object |
+| Variation by rule: planks of slightly different widths, stones of random size | |
+
+Repeated pieces vary where the real ones do: `jitter` in `roxy.repeat` gives each copy a small
+random offset, rotation and scale (hand-cut planks, laid stones), and none for machine-made rows.
+Realize (the default) whatever is exported, verified or cut; keep big render-only sets as
+instances. In a plan, a row is one part - its size the whole run, `"shape": "custom"`, `"how":
+"roxy.repeat"` - and the check and verify warn when five or more identical parts are placed one
+by one.
 
 ### 6. Write the plan and check it
 
@@ -199,7 +220,7 @@ Tested on Blender 5.1. They build mesh data directly (no viewport or mode switch
 scale at 1, and put the origin at the bottom centre so `location` is where the part stands.
 Most parts get `roxy.finish()`: a small angle-limited bevel and weighted normals.
 
-The addon provides these as `roxy.<name>` inside execute_blender_code (addon protocol 18+), so call them directly - don't paste or redefine them. If `roxy` is undefined, the Blender addon is outdated: get_addon_status says how to update it. `roxy.rounded_box`, `roxy.rounded_cylinder`, `roxy.loft`, `roxy.fuse`, `roxy.inset`, `roxy.extrude`, `roxy.set_pivot`, `roxy.carry` and `roxy.limit_motion` need protocol 23.
+The addon provides these as `roxy.<name>` inside execute_blender_code (addon protocol 18+), so call them directly - don't paste or redefine them. If `roxy` is undefined, the Blender addon is outdated: get_addon_status says how to update it. `roxy.rounded_box`, `roxy.rounded_cylinder`, `roxy.loft`, `roxy.fuse`, `roxy.inset`, `roxy.extrude`, `roxy.set_pivot`, `roxy.carry` and `roxy.limit_motion` need protocol 23, `roxy.repeat` 24.
 
 - `roxy.finish(obj, bevel=0.002, segments=2)` - Rounded edges that catch highlights, with clean shading.
 - `roxy.box(name, size, location=(0, 0, 0), bevel=0.002, parent=None, collection=None, origin='bottom')` - A box of real size (x, y, z metres) with scale 1.
@@ -208,6 +229,7 @@ The addon provides these as `roxy.<name>` inside execute_blender_code (addon pro
 - `roxy.loft(name, sections, location=(0, 0, 0), segments=6, bevel=0.002, parent=None, collection=None)` - One surface through rounded-rectangle sections from bottom to top, each (z, width, depth, corner_radius) or (z, width, depth, corner_radius, x, y): bodies whose section changes along their height. Both ends are capped flat.
 - `roxy.inset(obj, side, border, depth=0.0)` - Shape the flat face on side ("front", "back", "left", "right", "top", "bottom") into a frame `border` metres wide round a field pushed in by depth (recess) or out by a negative depth (raised panel). Round corners stay round.
 - `roxy.extrude(obj, side, distance, border=0.0)` - Grow the flat face on side out by distance (a lip, plinth, cap); with border, only a smaller area inset by border rises (a boss, a button, a step).
+- `roxy.repeat(source, count, step, name=None, count2=1, step2=(0, 0, 0), jitter=(0, 0, 0), seed=0, realize=True, location=None, parent=None)` - Geometry Nodes copies of source in a row (count along step) or grid (count2 rows along step2), with Count, Step, Rows, Row Step and Seed editable on the modifier; jitter=(location m, rotation degrees about z, scale fraction) varies each copy. The source is hidden and stays the piece to edit.
 - `roxy.fuse(obj, parts, fillet=None)` - Merge parts into obj as one continuous body (boolean union) and delete them; fillet (metres) rounds the seams where they meet, as on a casting or weld.
 - `roxy.cylinder(name, radius, depth, location=(0, 0, 0), segments=32, bevel=0.001, parent=None, collection=None, origin='bottom')` - An upright cylinder (legs, poles, pipes, knobs).
 - `roxy.extrude_profile(name, points, depth, location=(0, 0, 0), bevel=0.001, parent=None, collection=None)` - Extrude a closed 2D outline [(x, z), ...] in metres along +Y by depth: mouldings, brackets, frames, signs, anything with a custom silhouette.

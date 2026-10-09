@@ -32,6 +32,8 @@ MIN_FEATURES = 3
 # A part this thin lying flat on another part's face is usually a feature of that part modelled
 # by stacking (a frame, a panel, a lip) rather than shaped into it.
 THIN = 0.012
+# This many identical parts placed one by one are a row or grid that Geometry Nodes should make.
+REPEATS = 5
 SHAPES = ("box", "cylinder", "custom")
 GROUND = "ground"
 MOVES = ("hinge", "slide")
@@ -464,6 +466,22 @@ def _stacked(boxes: dict[str, Box], exempt: set, report: Report) -> None:
             "A real applied piece (a veneer, a badge, a decal) can stay.")
 
 
+def _repeats(boxes: dict[str, Box], report: Report) -> None:
+    """Identical parts placed one by one: a row of slats, posts or tiles is one Geometry Nodes
+    part whose count and spacing stay editable."""
+    same: dict[tuple, list[str]] = {}
+    for name, (lo, hi) in boxes.items():
+        same.setdefault(tuple(round((hi[i] - lo[i]) * 1000) for i in range(3)), []).append(name)
+    for names in same.values():
+        if len(names) >= REPEATS:
+            listed = ", ".join(sorted(names)[:6]) + (" ..." if len(names) > 6 else "")
+            report.warnings.append(
+                f"{len(names)} identical parts placed one by one ({listed}). A row or grid of the same "
+                "piece is one part made with Geometry Nodes - roxy.repeat(source, count, step), or "
+                "roxy.instances_along_curve along a path - so the count and spacing stay editable, with "
+                "jitter where the real ones vary.")
+
+
 def check(plan: dict) -> Report:
     """Check a plan's structure before anything is built."""
     report = Report()
@@ -529,6 +547,7 @@ def check(plan: dict) -> Report:
     _near_misses(list(boxes), gap, report)
     _sweep(plan, boxes, report)
     _stacked(boxes, {p["name"] for p in plan["parts"] if p.get("plain")}, report)
+    _repeats(boxes, report)
 
     lo = [min(b[0][i] for b in boxes.values()) for i in range(3)]
     hi = [max(b[1][i] for b in boxes.values()) for i in range(3)]
@@ -645,6 +664,7 @@ def verify(plan: dict, actual: dict[str, Box], gaps: list | None = None,
             "is one piece), or mark it \"plain\": true in the plan if the real thing is exactly that shape.")
     _verify_motion(plan, motion or [], strip, touch, planned, report)
     _stacked(boxes, plain, report)
+    _repeats(boxes, report)
     fresh = sorted(m for m, aged in (materials or {}).items() if not aged)
     if fresh:
         report.warnings.append(

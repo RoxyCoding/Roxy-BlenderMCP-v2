@@ -40,7 +40,7 @@ bl_info = {
 }
 
 # Keep in sync with blender_mcp.addon_manager.EXPECTED_ADDON_PROTOCOL_VERSION.
-ADDON_PROTOCOL_VERSION = 23
+ADDON_PROTOCOL_VERSION = 24
 
 _scene_version = 0
 
@@ -4585,6 +4585,67 @@ def tube_from_curve(curve_obj, radius=0.01, material=None, name="Tube"):
         l.new(last, setm.inputs["Geometry"]); last = setm.outputs["Geometry"]
     l.new(last, go.inputs["Geometry"])
     return mod
+
+def repeat(source, count, step, name=None, count2=1, step2=(0.0, 0.0, 0.0), jitter=(0.0, 0.0, 0.0), seed=0,
+           realize=True, location=None, parent=None, collection=None):
+    """Copies of source in a row (count along step, metres) or a grid (count2 rows along step2),
+    made by Geometry Nodes so Count, Step and Seed stay editable on the modifier: slats, planks,
+    balusters, fence posts, shelves, tiles, window rows, rafters, steps of a ladder.
+    jitter=(location m, rotation degrees about z, scale fraction) varies each copy at random - hand-made
+    and worn things are never exactly alike; keep it 0 for machine-made rows. The source is
+    hidden and kept as the thing to edit; realize=True makes real mesh (export, model_plan
+    verify, booleans), False keeps light instances for big render-only sets.
+    Returns the new object, at location (default the source's), named name or source_Repeat."""
+    name = name or source.name + "_Repeat"
+    obj = bpy.data.objects.new(name, bpy.data.meshes.new(name))
+    (collection or bpy.context.scene.collection).objects.link(obj)
+    obj.location = location if location is not None else source.location.copy()
+    if parent:
+        obj.parent = parent
+    mod, ng, gi, go = gn_modifier(obj, "Repeat")
+    n, l = ng.nodes, ng.links
+    rows = n.new("GeometryNodeMeshLine"); cols = n.new("GeometryNodeMeshLine")
+    l.new(expose(mod, "Count", "NodeSocketInt", int(count)), rows.inputs["Count"])
+    l.new(expose(mod, "Step", "NodeSocketVector", tuple(step)), rows.inputs["Offset"])
+    l.new(expose(mod, "Rows", "NodeSocketInt", int(count2)), cols.inputs["Count"])
+    l.new(expose(mod, "Row Step", "NodeSocketVector", tuple(step2)), cols.inputs["Offset"])
+    grid = n.new("GeometryNodeInstanceOnPoints")
+    l.new(rows.outputs["Mesh"], grid.inputs["Points"]); l.new(cols.outputs["Mesh"], grid.inputs["Instance"])
+    points = n.new("GeometryNodeRealizeInstances")
+    l.new(grid.outputs["Instances"], points.inputs["Geometry"])
+    info = n.new("GeometryNodeObjectInfo"); info.inputs["Object"].default_value = source
+    info.inputs["As Instance"].default_value = True
+    inst = n.new("GeometryNodeInstanceOnPoints")
+    l.new(points.outputs["Geometry"], inst.inputs["Points"]); l.new(info.outputs["Geometry"], inst.inputs["Instance"])
+    seed_in = expose(mod, "Seed", "NodeSocketInt", int(seed))
+    jl, jr, js = jitter
+
+    def rand(kind, lo, hi, offset):
+        r = n.new("FunctionNodeRandomValue"); r.data_type = kind
+        sock(r, "Min").default_value = lo; sock(r, "Max").default_value = hi
+        add = n.new("ShaderNodeMath"); add.inputs[1].default_value = offset
+        l.new(seed_in, add.inputs[0]); l.new(add.outputs[0], sock(r, "Seed"))
+        return sock(r, "Value", output=True)
+
+    last = inst.outputs["Instances"]
+    if jr:
+        a = math.radians(jr)
+        l.new(rand("FLOAT_VECTOR", (0.0, 0.0, -a), (0.0, 0.0, a), 1), inst.inputs["Rotation"])
+    if js:
+        l.new(rand("FLOAT", 1 - js, 1 + js, 2), inst.inputs["Scale"])
+    if jl:
+        move = n.new("GeometryNodeTranslateInstances")
+        l.new(last, move.inputs["Instances"]); l.new(rand("FLOAT_VECTOR", (-jl,) * 3, (jl,) * 3, 3), move.inputs["Translation"])
+        last = move.outputs["Instances"]
+    if realize:
+        real = n.new("GeometryNodeRealizeInstances")
+        l.new(last, real.inputs["Geometry"]); last = real.outputs["Geometry"]
+    l.new(last, go.inputs["Geometry"])
+    source.hide_viewport = True; source.hide_render = True
+    for m in source.data.materials if source.type == "MESH" else []:
+        obj.data.materials.append(m)
+    return obj
+
 
 def density_from_vertex_group(dist_node, ng, group_name, density):
     """Make a Distribute Points on Faces node's density follow a painted vertex group (0-1)."""

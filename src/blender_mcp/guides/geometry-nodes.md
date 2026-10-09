@@ -56,6 +56,7 @@ Tested on Blender 5.1.
 
 The addon provides these as `roxy.<name>` inside execute_blender_code (addon protocol 18+), so call them directly - don't paste or redefine them. If `roxy` is undefined, the Blender addon is outdated: get_addon_status says how to update it.
 
+- `roxy.repeat(source, count, step, name=None, count2=1, step2=(0.0, 0.0, 0.0), jitter=(0.0, 0.0, 0.0), seed=0, realize=True, location=None, parent=None, collection=None)` - Copies of source in a row or grid with Count, Step, Rows, Row Step and Seed exposed on the modifier; jitter=(location m, rotation degrees about z, scale fraction) varies each copy at random. Needs addon protocol 24.
 - `roxy.gn_modifier(obj, name)` - A Geometry Nodes modifier on obj with an empty group: Geometry in, Geometry out.
 - `roxy.sock(node, name, output=False)` - The enabled socket called name; several sockets can share a name, one per data type.
 - `roxy.expose(mod, name, socket_type, default)` - Add a group input the user can change on the modifier, and return the group input socket.
@@ -75,6 +76,13 @@ mod.node_group.links.new(spacing, roxy.sock(pts, "Length"))
 
 # Overhead wires between them: a Bezier curve per span, sagging in the middle, turned into tubes.
 roxy.tube_from_curve(wire_curve, radius=0.008, material=bpy.data.materials["Cable"])
+
+# A slatted bench seat: 8 hand-cut slats 90 mm apart, each a little different; change Count later.
+slat = roxy.rounded_box("Slat", (0.07, 0.45, 0.02), 0.003)
+seat = roxy.repeat(slat, 8, (0.09, 0, 0), name="Bench_Seat", jitter=(0.001, 1.0, 0.02), location=(-0.315, 0, 0.42))
+
+# Floor tiles 300 mm with 3 mm joints, 10 x 8.
+roxy.repeat(tile, 10, (0.303, 0, 0), name="Floor_Tiles", count2=8, step2=(0, 0.303, 0))
 
 # Grass only where a vertex group called "grass" was painted.
 roxy.density_from_vertex_group(dist_node, ng, "grass", density=40)

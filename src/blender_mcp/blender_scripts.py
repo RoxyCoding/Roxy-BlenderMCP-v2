@@ -606,6 +606,8 @@ parts, shapes, primitives, meshes, materials = {}, {}, [], {}, {}
 for x in root.children_recursive:
     if x.type not in {"MESH", "CURVE", "SURFACE", "FONT", "META", "CURVES"}:
         continue
+    if x.hide_render:    # a source that Geometry Nodes repeats, or a cutter: not part of the result
+        continue
     kind = primitive(x.data) if x.type == "MESH" else None
     if kind:
         primitives.append([x.name, kind])
@@ -862,6 +864,28 @@ if not meshes:
     return {"error": root.name + " has no mesh"}
 warnings = []
 base = re.sub(r"[^A-Za-z0-9_]+", "_", root.name).strip("_") or "Asset"
+# Geometry Nodes output has no faces of its own to unwrap, and its copies would share one UV
+# space: for painting, each such object becomes real mesh under its name, and the procedural
+# version stays beside it, hidden, as <name>_GN.
+dg = bpy.context.evaluated_depsgraph_get()
+for i, o in enumerate(list(meshes)):
+    if not any(m.type == "NODES" for m in o.modifiers):
+        continue
+    me = bpy.data.meshes.new_from_object(o.evaluated_get(dg))
+    solid = bpy.data.objects.new(o.name + "__solid", me)
+    for coll in o.users_collection:
+        coll.objects.link(solid)
+    solid.parent = o.parent
+    solid.matrix_parent_inverse = o.matrix_parent_inverse.copy()
+    solid.matrix_basis = o.matrix_basis.copy()
+    real = o.name
+    o.name = real + "_GN"
+    solid.name = real
+    o.hide_viewport = True; o.hide_render = True
+    meshes[i] = solid
+    warnings.append(real + " is Geometry Nodes output: it is now real mesh for painting; the editable "
+                    "version is hidden as " + o.name + " (rebuild and export again after changing it)")
+tree = [root] + list(root.children_recursive)
 fallback = None
 for o in meshes:
     used = {o.material_slots[p.material_index].material for p in o.data.polygons

@@ -18,7 +18,9 @@ Aim for AAA quality. Never settle for "something like it": model the specific re
 the features that identify it and get each one right, and give every part its real form - no
 boxes stuck together, no cylinder for a bottle or sphere for a head (get_guide("modeling"),
 steps 1 and 4). Shape features into the part they belong to (inset, extrude, cut) instead of
-stacking thin blocks on it. Nothing is factory-new by default: after materials, roxy.weather(obj)
+stacking thin blocks on it. Whatever follows a rule - rows and grids of one piece, copies along a
+path, scattering, variation - is Geometry Nodes (roxy.repeat, instances_along_curve, scatter), not
+objects placed one by one (get_guide("modeling"), Geometry Nodes or by hand). Nothing is factory-new by default: after materials, roxy.weather(obj)
 ages every surface over its textures ("used"; "new" only when new is the point). When the Roxy
 Substance 3D Painter MCP is connected, hero and close-up game assets get their textures and wear
 there instead, through painter_handoff (get_guide("surface-realism")). Before calling a scene or asset done, review it with
