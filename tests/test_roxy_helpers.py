@@ -13,7 +13,7 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 def _helper_source() -> str:
-    tree = ast.parse((ROOT / "addon.py").read_text(encoding="utf-8"))
+    tree = ast.parse((ROOT / "src" / "blender_mcp" / "bundled" / "addon.py").read_text(encoding="utf-8"))
     for node in tree.body:
         if isinstance(node, ast.Assign) and any(getattr(t, "id", None) == "_ROXY_HELPERS_SOURCE" for t in node.targets):
             return node.value.value
@@ -37,10 +37,6 @@ def test_guides_no_longer_carry_the_helper_code():
         for name in _public_helpers():
             assert f"def {name}(" not in guide.body
 
-
-def test_bundled_addon_has_the_same_helpers():
-    bundled = (ROOT / "src" / "blender_mcp" / "bundled" / "addon.py").read_text(encoding="utf-8")
-    assert _helper_source() in bundled
 
 
 def test_safe_mode_lets_scripts_use_roxy():

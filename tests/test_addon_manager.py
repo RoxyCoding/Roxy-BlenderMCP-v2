@@ -27,31 +27,9 @@ def test_bundled_addon_exists_and_has_protocol():
     assert f"ADDON_PROTOCOL_VERSION = {EXPECTED_ADDON_PROTOCOL_VERSION}" in text
 
 
-def test_root_and_bundled_addon_in_sync():
-    root = ROOT_ADDON
-    if not root.is_file():
-        return
-    # Address the bundled copy directly. get_bundled_addon_path() falls back to
-    # root addon.py, which would compare the file against itself and pass even
-    # when the bundled copy is missing entirely.
-    import blender_mcp
-
-    bundled = Path(blender_mcp.__file__).resolve().parent / "bundled" / "addon.py"
-    assert bundled.is_file(), (
-        "src/blender_mcp/bundled/addon.py is missing — uvx users would ship "
-        "without a bundled addon."
-    )
-    assert root.read_text(encoding="utf-8") == bundled.read_text(encoding="utf-8"), (
-        "Root addon.py and src/blender_mcp/bundled/addon.py diverged — "
-        "copy root → bundled after editing."
-    )
-
-
 def test_root_addon_protocol_matches_server_expectation():
     """ADDON_PROTOCOL_VERSION is hand-synced across two files; catch drift."""
     root = ROOT_ADDON
-    if not root.is_file():
-        return
     import re
 
     match = re.search(

@@ -1,14 +1,14 @@
 """Shared paths for the test suite.
 
-These tests read the root addon.py as a source file (it cannot be imported
-without bpy), so they need the repo root rather than the tests directory.
+These tests read the addon as a source file (it cannot be imported without
+bpy). src/blender_mcp/bundled/addon.py is its only copy.
 """
 from __future__ import annotations
 
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
-ROOT_ADDON = REPO_ROOT / "addon.py"
+ROOT_ADDON = REPO_ROOT / "src" / "blender_mcp" / "bundled" / "addon.py"
 
 
 import pytest

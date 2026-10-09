@@ -20,7 +20,7 @@ from pathlib import Path
 
 logger = logging.getLogger("BlenderMCPServer")
 
-# Must match ADDON_PROTOCOL_VERSION in addon.py / bundled/addon.py
+# Must match ADDON_PROTOCOL_VERSION in bundled/addon.py
 EXPECTED_ADDON_PROTOCOL_VERSION = 21
 
 PACKAGE = "roxy-blender-mcp"
@@ -191,18 +191,13 @@ class AddonHandshake:
 
 
 def get_bundled_addon_path() -> Path:
-    """Resolve the addon.py shipped with this package (or repo root in editable installs)."""
-    here = Path(__file__).resolve().parent
-    candidates = [
-        here / "bundled" / "addon.py",
-        here.parents[1] / "addon.py",  # repo root when running from src layout
-    ]
-    for path in candidates:
-        if path.is_file():
-            return path
+    """Resolve the addon.py shipped with this package, its only copy."""
+    path = Path(__file__).resolve().parent / "bundled" / "addon.py"
+    if path.is_file():
+        return path
     raise FileNotFoundError(
-        f"Bundled {ADDON_DISPLAY_NAME} addon.py not found. Copy addon.py from the "
-        "repository root into Blender manually."
+        f"Bundled {ADDON_DISPLAY_NAME} addon.py not found. Copy "
+        "src/blender_mcp/bundled/addon.py from the repository into Blender manually."
     )
 
 

@@ -8,7 +8,7 @@ import pytest
 
 from conftest import ROOT_ADDON
 from blender_mcp import server, session_rules
-from blender_mcp.addon_manager import EXPECTED_ADDON_PROTOCOL_VERSION, get_bundled_addon_path
+from blender_mcp.addon_manager import EXPECTED_ADDON_PROTOCOL_VERSION
 from test_addon_autostart import _load_autostart_helpers
 
 
@@ -119,7 +119,6 @@ def test_scene_state_is_app_only_and_does_not_attach_session_rules(monkeypatch):
 
 def test_scene_state_protocol_and_command_registration_match():
     source = ROOT_ADDON.read_text(encoding="utf-8")
-    assert ROOT_ADDON.read_bytes() == get_bundled_addon_path().read_bytes()
     assert f"ADDON_PROTOCOL_VERSION = {EXPECTED_ADDON_PROTOCOL_VERSION}" in source
     tree = ast.parse(source)
     handlers = next(node.value for node in ast.walk(tree) if isinstance(node, ast.Assign)

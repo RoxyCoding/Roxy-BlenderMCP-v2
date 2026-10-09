@@ -18,6 +18,7 @@ import pytest
 
 from blender_mcp import blender_scripts, server
 from blender_mcp.addon_manager import EXPECTED_ADDON_PROTOCOL_VERSION, AddonHandshake
+from conftest import ROOT_ADDON
 from mcp.types import CallToolResult, ImageContent
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -52,12 +53,15 @@ RELEASED_SERVER_COMMANDS = {
 
 def _addon_source(ref: str) -> str:
     if ref == "current":
-        return (ROOT / "addon.py").read_text(encoding="utf-8")
-    try:
-        return subprocess.run(["git", "show", f"{ref}:addon.py"], cwd=ROOT, capture_output=True,
-                              text=True, check=True).stdout
-    except (OSError, subprocess.CalledProcessError):
-        pytest.skip(f"addon.py at {ref} isn't available (shallow clone?)")
+        return ROOT_ADDON.read_text(encoding="utf-8")
+    # Older releases kept the addon at the repo root.
+    for path in ("src/blender_mcp/bundled/addon.py", "addon.py"):
+        try:
+            return subprocess.run(["git", "show", f"{ref}:{path}"], cwd=ROOT, capture_output=True,
+                                  text=True, check=True).stdout
+        except (OSError, subprocess.CalledProcessError):
+            continue
+    pytest.skip(f"addon.py at {ref} isn't available (shallow clone?)")
 
 
 def _commands(source: str) -> set[str]:
