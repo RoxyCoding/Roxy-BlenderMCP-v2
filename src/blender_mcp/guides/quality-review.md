@@ -33,9 +33,11 @@ history, every light has a reason, and nothing gives away that it was assembled 
 - Edges: no perfectly sharp corners on manufactured or worn objects; bevels catch highlights
   (`get_guide("surface-realism")`).
 - Contact: everything rests on something; no floating, no intersecting; contact shadows visible.
-  `model_plan(action="verify")` passes with no near-miss warnings left unexplained.
-- Joints: every part is fixed the way the real thing is (hinge, bracket, bolt into its plate,
-  pipe into a fitting); faces meant to be flush are flush. Check each joint close up.
+  `model_plan(action="verify")` passes with no near-miss warnings left unexplained, and
+  `get_scene_info(root=..., fields=["intersections"])` lists no part passing into another.
+- Joints: every part is fixed the way the real thing is (hinge, bracket, bolt in a hole through
+  its plate, pipe into a fitting, ring through ring, stone in its setting); faces meant to be
+  flush are flush. No part is pushed into another to stand in for a joint. Check each joint close up.
 
 **Surface**
 - Material variation: no large area of one flat colour or uniform roughness.
@@ -81,7 +83,13 @@ history, every light has a reason, and nothing gives away that it was assembled 
 | Tiled texture repeating on a floor | Larger texture (`min_size_m`), rotate/offset per object, blend a second texture with noise |
 | Everything perfectly sharp | Depth of field on close shots |
 | Objects floating 1 cm above the floor | Snap to the ground from the bounding box; check a low side view |
-| A lid, shelf or fitting hovering beside what should hold it | Add the hinge, bracket or fixing; sink bolts into their plate; verify again |
+| A lid, shelf or fitting hovering beside what should hold it | Add the hinge, bracket or fixing; seat bolts in holes cut through their plate; verify again |
+| A primitive standing in for a designed part (squashed-sphere petal, single-spiral rose, flat-strip ribbon, plain-cylinder medallion) | Rebuild it from what it is made of (modeling: No shortcuts) |
+| An outline that only roughly matches the reference (ellipse for a pointed arch) | Match the silhouette side by side with the reference before detail |
+| Ornaments too big, too small or crowded | Measure against the whole in the reference; place from measured sizes |
+| Ribbon, cord or chain stiff, straight or hovering | Rest it on what is below; let it hang and gather; cut its ends |
+| An element of the reference missing without a word | Model it, or tell the user it is left out |
+| One part stuck into another (a pin end in a ring's side, a cap sunk into a gem, trim buried in a panel) | Make the real joint: cut the hole or groove, build it as one piece, link rings through each other, shape the setting to the stone |
 | Panels a few mm proud of or short of their frame | Line the faces up exactly, or make the step a clear 10 mm+ |
 | Mixed styles (low-poly next to photoscan) | Replace the odd ones out |
 | Foreign details in a Japanese setting | Sockets, signs, plates, text, steering side (japanese-design) |

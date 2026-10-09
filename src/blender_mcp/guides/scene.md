@@ -43,7 +43,7 @@ gives `world_bounding_box`; use it:
 - Put it on the ground: `obj.location.z -= min_z` (with the bounding box min z).
 - Rotate it to face the right way; generators usually face -Y or +Y. Check with
   `look(mode="angles", target=[name])`.
-- Check it doesn't intersect its neighbours.
+- Check it doesn't intersect its neighbours: `get_scene_info(query=name, fields=["intersections"])`.
 
 ## Composition
 

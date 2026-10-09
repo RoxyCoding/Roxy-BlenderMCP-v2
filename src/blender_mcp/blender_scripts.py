@@ -41,16 +41,46 @@ def parse_result(output: str) -> dict:
 # and parent scale included), and are only computed when asked for.
 # In the order they appear on a line.
 SCENE_FIELDS = ("location", "rotation", "scale", "size", "ground", "parent", "details", "materials",
-                "modifiers", "animation", "hidden", "children", "topology", "weights", "settings")
+                "modifiers", "animation", "hidden", "children", "topology", "weights", "intersections",
+                "settings")
 SCENE_DEFAULT_FIELDS = ("location", "size", "children", "hidden")
 
-SCENE_SUMMARY = r'''
+# How far two overlapping surfaces pass into each other: the deepest sampled
+# vertex of either that lies inside the other. Inside is decided by ray parity
+# (odd crossings in at least two of three directions), not by face normals, so
+# flipped normals don't fake a penetration. Shared by SCENE_SUMMARY and PLAN_STATE.
+PENETRATION = r'''
+def _inside(tree, v):
+    from mathutils import Vector
+    votes = 0
+    for d in (Vector((0.5773, 0.5774, 0.5773)), Vector((-0.6, 0.0, 0.8)), Vector((0.0, -0.8, -0.6))):
+        o, hits = v.copy(), 0
+        while hits < 64:
+            loc, _, _, _ = tree.ray_cast(o, d, 10.0)
+            if loc is None:
+                break
+            hits += 1
+            o = loc + d * 1e-6
+        votes += hits % 2
+    return votes >= 2
+
+def penetration(ta, va, tb, vb):
+    depth = 0.0
+    for t, vs in ((tb, va), (ta, vb)):
+        for v in vs:
+            loc, _, _, d = t.find_nearest(v, 0.05)
+            if loc is not None and d > depth and _inside(t, v):
+                depth = d
+    return depth
+'''
+
+SCENE_SUMMARY = PENETRATION + r'''
 import bpy, math
 from mathutils import Vector
 
 scene = bpy.context.scene
 F = set(ARGS.get("fields") or ())
-depsgraph = bpy.context.evaluated_depsgraph_get() if F & {"size", "ground"} else None
+depsgraph = bpy.context.evaluated_depsgraph_get() if F & {"size", "ground", "intersections"} else None
 limit = max(1, min(int(ARGS.get("limit") or 20), 500))
 query = (ARGS.get("query") or "").strip().lower()
 root_name = ARGS.get("root")
@@ -124,6 +154,8 @@ def line(obj, depth=0):
         w = weights(obj)
         if w:
             add("weights", w)
+    if "intersections" in F and obj.type in SOLID_TYPES:
+        add("intersections", intersections(obj))
     objects.append({"name": obj.name, "type": obj.type, "fields": values})
     return " | ".join(parts)
 
@@ -144,8 +176,60 @@ def topology(obj):
     return (f"{sides.count(4)} quads, {sides.count(3)} tris, {sum(1 for n in sides if n > 4)} ngons; "
             f"{non_manifold} non-manifold, {boundary} boundary edges, {loose} loose verts, {poles} poles")
 
+SOLID_TYPES = {"MESH", "CURVE", "SURFACE", "FONT", "META"}
+_shapes = {}
+
+def shape(obj):
+    """World-space BVH, sampled vertices and box of an object's evaluated surface (cached)."""
+    if obj.name not in _shapes:
+        import bmesh
+        from mathutils.bvhtree import BVHTree
+        _shapes[obj.name] = None
+        ev = obj.evaluated_get(depsgraph)
+        try:
+            me = ev.to_mesh()
+        except RuntimeError:
+            me = None
+        if me is not None:
+            bm = bmesh.new()
+            bm.from_mesh(me)
+            ev.to_mesh_clear()
+            bm.transform(ev.matrix_world)
+            bm.normal_update()
+            if bm.verts and bm.faces:
+                vs = [v.co.copy() for v in bm.verts]
+                lo = [min(v[i] for v in vs) for i in range(3)]
+                hi = [max(v[i] for v in vs) for i in range(3)]
+                _shapes[obj.name] = (BVHTree.FromBMesh(bm), vs[::max(1, len(vs) // 4000)], lo, hi)
+            bm.free()
+    return _shapes[obj.name]
+
+def intersections(obj):
+    a = shape(obj)
+    if a is None:
+        return "no surface"
+    found = []
+    for o in scene.objects:
+        if o is obj or o.type not in SOLID_TYPES or o.hide_get() or o.hide_render:
+            continue
+        b = shape(o)
+        if b is None or any(a[2][i] > b[3][i] or b[2][i] > a[3][i] for i in range(3)):
+            continue
+        if not a[0].overlap(b[0]):
+            continue
+        depth = penetration(a[0], a[1], b[0], b[1])
+        # model_plan.penetration_tol: deeper is overlapped, not joined.
+        thinnest = min(min(s[3][i] - s[2][i] for i in range(3)) for s in (a, b))
+        if depth > min(0.0005, max(0.00005, 0.1 * thinnest)):
+            found.append((depth, o.name))
+    if not found:
+        return "no intersections"
+    found.sort(reverse=True)
+    return ("passes into " + ", ".join(f"{n} {d * 1000:.1f} mm" for d, n in found[:6])
+            + (f" (+{len(found) - 6} more)" if len(found) > 6 else ""))
+
 def weights(obj):
-    arm = next((m.object for m in obj.modifiers if m.type == "ARMATURE" and m.object), None)
+    arm =next((m.object for m in obj.modifiers if m.type == "ARMATURE" and m.object), None)
     if arm is None:
         return None
     deform = {b.name for b in arm.data.bones if b.use_deform}
@@ -566,7 +650,7 @@ return out
 # real gap between the meshes of every pair of parts whose boxes come within
 # NEAR of each other: a box says a hinged lid or a round pole touches what it only
 # comes close to, the surfaces don't. Pairs left out are further apart than NEAR.
-PLAN_STATE = r'''
+PLAN_STATE = PENETRATION + r'''
 import bpy, bmesh
 from mathutils import Vector
 from mathutils.bvhtree import BVHTree
@@ -611,7 +695,8 @@ for i, a in enumerate(names):
             continue
         (ta, va), (tb, vb) = shapes[a], shapes[b]
         if ta.overlap(tb):
-            gap = 0.0
+            gaps.append([a, b, 0.0, round(penetration(ta, va, tb, vb), 5)])
+            continue
         else:
             near = [t.find_nearest(v, NEAR) for t, vs in ((tb, va), (ta, vb)) for v in vs]
             dists = [n[3] for n in near if n[0] is not None]

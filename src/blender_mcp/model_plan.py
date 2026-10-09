@@ -17,14 +17,26 @@ from __future__ import annotations
 import math
 from dataclasses import dataclass, field
 
-# Two parts closer than this touch. Generous enough for bevels and float noise.
-CONTACT_TOL = 0.005
+# Every tolerance scales with the parts it compares, capped at the value that
+# suits furniture: a 1 mm gap is a tight fit between a shelf and its post but a
+# visible hole between a 5 mm jump ring and the pin it hangs from. The scale of
+# a pair is the longest side of the smaller part.
+
+# Two parts closer than this touch. Generous enough for bevels and float noise
+# (surfaces are measured to 0.1 mm).
+CONTACT_TOL, CONTACT_REL, CONTACT_MIN = 0.005, 0.02, 0.0002
 # Parts closer than this without touching almost certainly were meant to meet:
 # a shelf 1 cm from its post, a bolt hovering over its plate.
-NEAR_MISS = 0.03
+NEAR_MISS, NEAR_REL = 0.03, 0.5
 # Faces of two touching parts this close to flush, but not flush, read as a
 # careless step: a side panel standing 3 mm proud of the post it is fixed to.
-FLUSH_MIN, FLUSH_MAX = 0.001, 0.006
+FLUSH_MIN, FLUSH_MAX, FLUSH_REL = 0.001, 0.006, 0.05
+# Parts that pass further than this into each other are not joined, they are
+# overlapped: a pin butted into the side of a ring, a cap stacked into a gem, a
+# trim line sunk into the panel it should sit on or in a groove cut for it.
+# Scaled by the thinner part's thinnest side: 0.3 mm is nothing in a plank and
+# half of a 0.7 mm wire.
+PENETRATION_TOL, PENETRATION_REL, PENETRATION_MIN = 0.0005, 0.1, 0.00005
 MAX_LISTED = 12
 SHAPES = ("box", "cylinder", "custom")
 GROUND = "ground"
@@ -57,6 +69,36 @@ def part_box(part: dict) -> Box:
     sx, sy, sz = part["size"]
     x, y, z = part["at"]
     return (x - sx / 2, y - sy / 2, z), (x + sx / 2, y + sy / 2, z + sz)
+
+
+def _longest(box: Box) -> float:
+    return max(box[1][i] - box[0][i] for i in range(3))
+
+
+def _thinnest(box: Box) -> float:
+    return min(box[1][i] - box[0][i] for i in range(3))
+
+
+def pair_scale(*boxes: Box) -> float:
+    """The size a pair's tolerances scale with: the longest side of the smaller part."""
+    return min(_longest(b) for b in boxes)
+
+
+def contact_tol(*boxes: Box) -> float:
+    return min(CONTACT_TOL, max(CONTACT_MIN, CONTACT_REL * pair_scale(*boxes)))
+
+
+def near_miss(*boxes: Box) -> float:
+    return min(NEAR_MISS, NEAR_REL * pair_scale(*boxes))
+
+
+def flush_band(*boxes: Box) -> tuple[float, float]:
+    hi = min(FLUSH_MAX, FLUSH_REL * pair_scale(*boxes))
+    return hi * FLUSH_MIN / FLUSH_MAX, hi
+
+
+def penetration_tol(*boxes: Box) -> float:
+    return min(PENETRATION_TOL, max(PENETRATION_MIN, PENETRATION_REL * min(_thinnest(b) for b in boxes)))
 
 
 def touching(a: Box, b: Box, tol: float = CONTACT_TOL) -> bool:
@@ -118,6 +160,8 @@ def _supports(part: dict) -> list[str]:
 
 
 def _gap_text(gap: float) -> str:
+    if gap < 0.01:
+        return f"{gap * 1000:.1f} mm"
     return f"{gap * 1000:.0f} mm" if gap < 1 else "more than 50 mm" if math.isinf(gap) else f"{gap:.2f} m"
 
 
@@ -136,7 +180,7 @@ def _structure(boxes: dict[str, Box], plan: dict, report: Report, built: bool, g
             continue
         for s in supports:
             if s == GROUND:
-                if abs(boxes[name][0][2]) > CONTACT_TOL:
+                if abs(boxes[name][0][2]) > contact_tol(boxes[name]):
                     where = "is" if built else "would be"
                     report.errors.append(f"{name}: rests on the ground but its bottom {where} at "
                                          f"{boxes[name][0][2]:.3f} m, not 0.")
@@ -146,11 +190,11 @@ def _structure(boxes: dict[str, Box], plan: dict, report: Report, built: bool, g
                 report.errors.append(f"{name}: rests_on {s!r}, which is not a part of the plan.")
             elif s not in boxes:
                 continue
-            elif (g := gap(name, s)) > CONTACT_TOL:
+            elif (g := gap(name, s)) > contact_tol(boxes[name], boxes[s]):
                 report.errors.append(f"{name}: rests on {s} but does not touch it (gap {_gap_text(g)}). "
                                      "Move it onto its support, or add the bracket, hinge or fixing that "
                                      "joins them as a part.")
-            elif not built and edge_only(part, parts[s]):
+            elif not built and edge_only(part, parts[s], contact_tol(boxes[name], boxes[s])):
                 report.errors.append(f"{name}: meets {s} only along an edge or at a corner, which holds "
                                      "nothing. Overlap them across a face, or add the part that joins them.")
             else:
@@ -171,10 +215,11 @@ def _structure(boxes: dict[str, Box], plan: dict, report: Report, built: bool, g
     return grounded
 
 
-def _near_misses(names: list[str], gap, report: Report) -> None:
-    """Parts that come within a few centimetres of each other without touching."""
+def _near_misses(boxes: dict[str, Box], gap, report: Report) -> None:
+    """Parts that come close to each other, for their size, without touching."""
+    names = list(boxes)
     found = sorted((g, a, b) for i, a in enumerate(names) for b in names[i + 1:]
-                   if CONTACT_TOL < (g := gap(a, b)) <= NEAR_MISS)
+                   if contact_tol(boxes[a], boxes[b]) < (g := gap(a, b)) <= near_miss(boxes[a], boxes[b]))
     for g, a, b in found[:MAX_LISTED]:
         report.warnings.append(f"{a} and {b} are {_gap_text(g)} apart. Meant to meet? Close the gap. A real "
                                "clearance (a drawer or door gap) is a few mm and the same all round.")
@@ -188,12 +233,14 @@ def _not_flush(boxes: dict[str, Box], touching_pairs, report: Report) -> None:
     found = []
     for a, b in touching_pairs:
         A, B = boxes[a], boxes[b]
+        lo, hi = flush_band(A, B)
         for i in range(3):
             for side, label in ((0, "min"), (1, "max")):
                 d = abs(A[side][i] - B[side][i])
-                if FLUSH_MIN < d < FLUSH_MAX:
+                if lo < d < hi:
                     found.append(f"{a} and {b}: their {label} {axes[i]} faces are {d * 1000:.1f} mm off "
-                                 "flush. Line them up exactly, or make the step deliberate (10 mm or more).")
+                                 f"flush. Line them up exactly, or make the step deliberate "
+                                 f"({_gap_text(hi * 10 / 6)} or more).")
     report.warnings.extend(found[:MAX_LISTED])
     if len(found) > MAX_LISTED:
         report.warnings.append(f"... and {len(found) - MAX_LISTED} more faces almost flush.")
@@ -256,7 +303,7 @@ def check(plan: dict) -> Report:
     gap = lambda a, b: part_gap(by_name[a], by_name[b])
     _structure(boxes, plan, report, built=False, gap=gap)
     _overlaps(boxes, plan, report)
-    _near_misses(list(boxes), gap, report)
+    _near_misses(boxes, gap, report)
 
     lo = [min(b[0][i] for b in boxes.values()) for i in range(3)]
     hi = [max(b[1][i] for b in boxes.values()) for i in range(3)]
@@ -278,7 +325,8 @@ def check(plan: dict) -> Report:
 def verify(plan: dict, actual: dict[str, Box], gaps: list | None = None) -> Report:
     """Compare what was built (boxes in the assembly's own space) against its plan.
 
-    gaps are [part, part, metres] between the real surfaces of the pairs that come close;
+    gaps are [part, part, metres] between the real surfaces of the pairs that come close,
+    with a fourth value for pairs that overlap: how far one passes into the other;
     without them (an older server script) the boxes stand in for the surfaces. Detail added
     after the plan is checked too: everything must be fixed to something that is held up.
     """
@@ -289,8 +337,13 @@ def verify(plan: dict, actual: dict[str, Box], gaps: list | None = None) -> Repo
     for full, box in actual.items():
         boxes[strip(full)] = (tuple(box[0]), tuple(box[1]))
     measured: dict[frozenset, float] | None = None
+    depths: dict[tuple[str, str], float] = {}
     if gaps is not None:
-        measured = {frozenset((strip(a), strip(b))): float(g) for a, b, g in gaps}
+        measured = {}
+        for a, b, g, *rest in gaps:
+            measured[frozenset((strip(a), strip(b)))] = float(g)
+            if rest:
+                depths[(strip(a), strip(b))] = float(rest[0])
 
     def gap(a: str, b: str) -> float:
         if measured is None:
@@ -326,7 +379,7 @@ def verify(plan: dict, actual: dict[str, Box], gaps: list | None = None) -> Repo
     pairs = []
     for i, a in enumerate(names):
         for b in names[i + 1:]:
-            if gap(a, b) <= CONTACT_TOL:
+            if gap(a, b) <= contact_tol(boxes[a], boxes[b]):
                 touch[a].add(b)
                 touch[b].add(a)
                 pairs.append((a, b))
@@ -343,11 +396,28 @@ def verify(plan: dict, actual: dict[str, Box], gaps: list | None = None) -> Repo
             if not touch[n]:
                 near = min((gap(n, o) for o in names if o != n), default=math.inf)
                 report.errors.append(f"{n}: touches nothing - it floats ({_gap_text(near)} from the nearest "
-                                     "part). Fix it to what holds it: sink a bolt into its plate, sit a lid "
+                                     "part). Fix it to what holds it: seat a bolt in a hole through its plate, sit a lid "
                                      "on its rim or hinge, add the bracket a shelf hangs from.")
             else:
                 report.errors.append(f"{n}: touches only {', '.join(sorted(touch[n]))}, which "
                                      "never connect to the structure - the group floats.")
-    _near_misses(names, gap, report)
+    _penetrations(depths, boxes, report)
+    _near_misses(boxes, gap, report)
     _not_flush(boxes, pairs, report)
     return report
+
+
+def _penetrations(depths: dict[tuple[str, str], float], boxes: dict[str, Box], report: Report) -> None:
+    """Parts whose real surfaces pass through each other instead of being joined."""
+    def tol(a, b):
+        return penetration_tol(boxes[a], boxes[b]) if a in boxes and b in boxes else PENETRATION_TOL
+    found = sorted(((d, a, b) for (a, b), d in depths.items() if d > tol(a, b)), reverse=True)
+    for d, a, b in found[:MAX_LISTED]:
+        report.errors.append(
+            f"{a} and {b} pass {d * 1000:.1f} mm into each other. Overlapping two solids is not a joint, "
+            "even where another part hides it. Join them the way the real thing is made: cut the hole, "
+            "socket, groove or seat one sits in (roxy.cut), make them one piece (a pin and its eye are one "
+            "bent wire: roxy.sweep), pass a ring through the other's opening with clearance, or rest one "
+            "face on the other.")
+    if len(found) > MAX_LISTED:
+        report.errors.append(f"... and {len(found) - MAX_LISTED} more pairs pass into each other.")

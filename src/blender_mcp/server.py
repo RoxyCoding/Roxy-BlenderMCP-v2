@@ -369,7 +369,9 @@ a smaller max_size keeps long sessions cheap.
 Before a risky or sweeping change, checkpoint(action="save"); restore it if the result is worse.
 
 Never model anything with more than one part before model_plan(action="check") passes its
-structure; build from the plan and verify against it.
+structure; build from the plan and verify against it. In every model, no part may pass into
+another: build the real joint (a hole, one piece, linked rings) and check with get_scene_info
+fields=["intersections"]. No shortcuts: build every element as it is really made and shaped.
 
 Real-world buildings, products and everyday items follow Japanese specifications and design
 unless the user names another region; game assets target Unreal Engine 5 unless the user names
@@ -639,7 +641,9 @@ async def get_scene_info(
       contents: children (count), hidden, details (faces, bones or light power), materials,
         modifiers, animation
       health: topology (quads, tris, ngons, non-manifold and boundary edges, loose verts,
-        poles), weights (vertices no deform bone moves, deform bones with no vertex group)
+        poles), weights (vertices no deform bone moves, deform bones with no vertex group),
+        intersections (other visible objects whose surfaces pass more than 0.5 mm into it - parts
+        overlapped instead of joined; run it on every model you build, planned or not)
       settings: adds a line with the file, engine, frame range, resolution, camera, HDRI and
         unit scale
     - query: Name filter across all objects.

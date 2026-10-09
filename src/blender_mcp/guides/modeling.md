@@ -21,6 +21,11 @@ does it stand. Purpose explains form: a chair's seat height comes from legs, a h
 from hands, a roof's slope from rain, a branch's taper from growth. If unsure what it looks like,
 say what you will assume, or ask the user for a reference image.
 
+With a reference image, take an inventory before any geometry: every visible element (body,
+fittings, ornaments, soft goods, gems, text), its outline, how it is made, its size measured
+against the whole in the image, and its material. That list is the job: each item is modelled
+to match, or reported to the user as left out or simplified - never silently dropped.
+
 ### 2. Work out the dimensions
 
 Size the whole first, then each part, in metres. Derive sizes rather than guess them:
@@ -167,13 +172,32 @@ table = roxy.assemble("Table", [top, *legs, *aprons])
 - **Detail where it is seen.** Hero subjects close to the camera get bevels with more segments,
   real gaps between parts (2-3 mm), visible fasteners and seams. Background subjects can be
   simple shapes with good materials.
-- **No hairline gaps, no floating.** Parts that touch in reality meet exactly or overlap slightly
-  out of sight.
+- **No hairline gaps, no floating.** Parts that touch in reality meet exactly; at most a few
+  tenths of a millimetre of overlap where two faces rest on each other.
 - **Every joint is a real joint.** Ask of each part how it is fixed, and model that: a lid sits
   on its rim or turns on a hinge the model shows; a shelf hangs from a bracket or sleeve; a bolt
-  head sits on its plate with the shank sunk into it; a pipe enters a hole, a flange or a
+  head sits on its plate with the shank in a hole cut for it; a pipe enters a hole, a flange or a
   fitting; a trim strip lies flush against the face it covers. Something "near" its support is
   floating - fixings are where a model looks careless first.
+- **Nothing passes through anything.** Pushing one solid into another and letting the overlap
+  stand for the joint is never a joint, even where a third part hides it. Each overlap is a
+  question - how is this really made? - with an answer you can model:
+  - **Inserted** (pin, shank, stem, tenon, ribbon end): `roxy.cut` the hole or socket first, then
+    seat the part in it.
+  - **One piece** (an eye pin's shank and loop, a cast setting and its petals, a bent bracket):
+    build it as one mesh - `roxy.sweep` one wire, one lathe or profile - not two parts butted
+    together. A cylinder end stuck into the side of a ring is the classic fake.
+  - **Linked** (chain links, jump rings, a ring through an eye or lug): each ring passes through
+    the other's opening with clearance; they never share volume.
+  - **Set** (a gem in a bezel or cup, a cap over a gem): the holder is a hollow shell shaped to the
+    stone with a small clearance; the stone does not run through the holder or what is under it.
+  - **Inlaid or seated** (metal lines in leather, a badge in a panel): cut the groove or recess, or
+    rest the part on the surface - don't sink it into the panel.
+  - **Resting / layered** (straps over trim, ribbon over a cover, flowers side by side, bow loops
+    over the knot): route it over what lies beneath with clearance; neighbours touch, they don't
+    interpenetrate. Things that gather (a ribbon in a knot) get narrower, not overlapped.
+  `model_plan(action="verify")` and `get_scene_info(root=..., fields=["intersections"])` measure
+  how far parts pass into each other; every pair deeper than 0.5 mm is a joint still to be made.
 - **Flush or clearly stepped.** Faces that line up in reality line up exactly; a deliberate
   step (a reveal, a lip) is 10 mm or more. A side panel 2-3 mm proud of its post, or a frame a
   few mm short of the casing, reads as a mistake.
@@ -185,6 +209,34 @@ table = roxy.assemble("Table", [top, *legs, *aprons])
 - **UVs.** Every part needs UVs before texturing. `roxy.uv_world_box` suits hard-surface subjects and
   architecture; organic shapes need seams and unwrapping (`get_guide("retopology")`, UVs).
 
+## No shortcuts
+
+A shortcut looks finished in a wide shot and wrong to anyone who looks. Each of these is
+unfinished work, not a simplification:
+
+- **A primitive standing in for a designed part.** A squashed sphere for a petal, one spiral
+  strip for a rose, a flat strip on a polyline for a ribbon, a plain cylinder for a cast
+  medallion, a torus for a chain. Build each element from what it is made of: a rose from
+  separate cupped petals in layers, a ribbon as fabric (width, thickness, gathered where it is
+  tied, cut ends, hanging under gravity), a chain from links, filigree as raised relief with a
+  real cross-section, a cast setting as one piece.
+- **An outline that only roughly matches.** A pointed arch is not an ellipse; a teardrop is not
+  a sphere. Match the silhouette of the reference or the real object before adding detail, and
+  compare again after.
+- **Sizes and spacing by guess.** Measure every element against the whole (in the reference, or
+  from real dimensions) and compute positions from the measured sizes, so neighbours touch or
+  clear as intended instead of piling into each other.
+- **Soft and loose things that ignore physics.** Fabric, cords, chains, leaves and charms rest on
+  what is under them and hang under gravity; no stiff straight runs, no hovering ends.
+- **Copies and edits that leave the rest behind.** After deleting, moving, mirroring or
+  duplicating a part, deal with what depended on it: leaves of a deleted flower, a strap that
+  ended on a moved cover, ornaments a mirror now drives into something.
+- **Flat surfaces where the real one has structure.** One colour per part where the reference
+  shows inlay, enamel, stitching, page edges, grain or wear (`get_guide("surface-realism")`).
+- **"Done" from a distance.** Look at every element close up, at the largest size the viewer
+  will see it, and side by side with the reference (`look(image=<reference path>)`, then the
+  model from the same angle). Fix what differs, and tell the user what is still simplified.
+
 ## Checking
 
 - **Structure:** `model_plan(action="verify", name=...)` after building, after adding detail and
@@ -193,7 +245,7 @@ table = roxy.assemble("Table", [top, *legs, *aprons])
   every near miss and almost-flush warning and either close it or say why it is intended.
 - **Joints:** `look(target=[...], distance=...)` close up on every joint - hinges, brackets,
   bolts, pipe ends, where trims meet the body - from two angles. A gap that is invisible from the
-  default distance is obvious in a close shot.
+  default distance is obvious in a close shot, and so is a part that runs into another one.
 - **Size:** read `obj.dimensions` or `get_scene_info(query=...)` against your planned dimensions.
   A 1.65 m tall cylinder named `_ScaleRef` beside the subject makes scale errors obvious in `look`;
   delete it afterwards.

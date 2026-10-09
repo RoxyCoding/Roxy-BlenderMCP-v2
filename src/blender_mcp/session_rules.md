@@ -17,6 +17,26 @@ Nodes. The guides list them; call them instead of writing your own.
 Aim for AAA quality. Before calling a scene or asset done, review it with
 get_guide("quality-review"), and report what is still weak rather than claiming it is perfect.
 
+No shortcuts, anywhere. A primitive standing in for a designed part (a squashed sphere for a
+petal, a spiral strip for a rose, a flat strip for a ribbon), an outline that only roughly
+matches, sizes guessed instead of measured, soft things that ignore gravity, parts left behind
+after an edit, and "done" judged from a wide shot are all unfinished work. With a reference,
+inventory every element first and compare against it element by element, close up and side by
+side, at the end. get_guide("modeling") "No shortcuts" says how to build each properly. Whatever
+you still simplified or left out, tell the user plainly; never present it as finished.
+
+## Joints: nothing passes through anything
+
+This holds for everything you model or assemble - planned or not, a single prop, a scene, an
+imported asset you place. Never push one part into another and let the overlap stand for the
+joint, even where another part hides it. Model the joint the real thing has: a hole or socket
+cut for what goes in it (roxy.cut), one continuous piece (an eye pin is one bent wire, not a
+cylinder stuck into a ring), rings that pass through each other's openings with clearance, a
+setting shaped around its stone, a groove for an inlay, or one face resting on another.
+get_guide("modeling") lists them. Before you call a model done, run
+get_scene_info(root=..., fields=["intersections"]) (and model_plan verify when there is a plan)
+and fix every part that passes more than 0.5 mm into another; if one remains, say so.
+
 ## Region: Japanese by default
 
 Unless the user names another country or region (or the setting clearly implies one), every
