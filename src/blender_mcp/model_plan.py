@@ -29,6 +29,9 @@ MAX_LISTED = 12
 # Identifying features a plan must name: the details that make the subject this real thing
 # rather than something like it.
 MIN_FEATURES = 3
+# A part this thin lying flat on another part's face is usually a feature of that part modelled
+# by stacking (a frame, a panel, a lip) rather than shaped into it.
+THIN = 0.012
 SHAPES = ("box", "cylinder", "custom")
 GROUND = "ground"
 MOVES = ("hinge", "slide")
@@ -433,6 +436,34 @@ def _verify_motion(plan: dict, motion: list, strip, touch: dict, planned: dict, 
             report.notes.append(f"{mover} moves through its whole range {mv['range']} without hitting anything.")
 
 
+def _stacked(boxes: dict[str, Box], exempt: set, report: Report) -> None:
+    """Thin plates laid on another part's face, inside its outline."""
+    found = []
+    for a, A in boxes.items():
+        if a in exempt:
+            continue
+        dims = [A[1][i] - A[0][i] for i in range(3)]
+        t = min(range(3), key=lambda i: dims[i])
+        others = sorted(dims[i] for i in range(3) if i != t)
+        if dims[t] > THIN or dims[t] > 0.2 * others[0]:
+            continue
+        for b, B in boxes.items():
+            if b == a:
+                continue
+            against = abs(A[0][t] - B[1][t]) <= CONTACT_TOL or abs(A[1][t] - B[0][t]) <= CONTACT_TOL
+            inside = all(B[0][i] <= A[0][i] + CONTACT_TOL and A[1][i] <= B[1][i] + CONTACT_TOL
+                         for i in range(3) if i != t)
+            if against and inside:
+                found.append((a, b))
+                break
+    for a, b in found[:MAX_LISTED]:
+        report.warnings.append(
+            f"{a} is a thin plate laid on {b}'s face. If it is part of the same piece - a frame, a panel, a lip, "
+            f"a step - shape it into {b} instead of stacking: roxy.inset (a frame round a recessed or raised "
+            "field), roxy.extrude (a lip, plinth or boss grown from the face), roxy.cut (a recess or slot). "
+            "A real applied piece (a veneer, a badge, a decal) can stay.")
+
+
 def check(plan: dict) -> Report:
     """Check a plan's structure before anything is built."""
     report = Report()
@@ -497,6 +528,7 @@ def check(plan: dict) -> Report:
     _overlaps(boxes, plan, report)
     _near_misses(list(boxes), gap, report)
     _sweep(plan, boxes, report)
+    _stacked(boxes, {p["name"] for p in plan["parts"] if p.get("plain")}, report)
 
     lo = [min(b[0][i] for b in boxes.values()) for i in range(3)]
     hi = [max(b[1][i] for b in boxes.values()) for i in range(3)]
@@ -520,7 +552,8 @@ def check(plan: dict) -> Report:
 
 
 def verify(plan: dict, actual: dict[str, Box], gaps: list | None = None,
-           primitives: list | None = None, motion: list | None = None) -> Report:
+           primitives: list | None = None, motion: list | None = None,
+           materials: dict | None = None) -> Report:
     """Compare what was built (boxes in the assembly's own space) against its plan.
 
     gaps are [part, part, metres] between the real surfaces of the pairs that come close;
@@ -528,7 +561,8 @@ def verify(plan: dict, actual: dict[str, Box], gaps: list | None = None,
     after the plan is checked too: everything must be fixed to something that is held up.
     primitives are [part, kind] for the parts whose mesh is still a stand-in shape (box,
     prism, cone, sphere). motion is what Blender found moving each moving part through its
-    range: its origin, what is parented under it, and what it ran into.
+    range: its origin, what is parented under it, and what it ran into. materials maps each
+    material on the parts to how it was aged (roxy.weather), or None.
     """
     report = Report()
     prefix = plan["name"] + "_"
@@ -610,6 +644,14 @@ def verify(plan: dict, actual: dict[str, Box], gaps: list | None = None,
             "(roxy.rounded_box, rounded_cylinder, loft, lathe, extrude_profile, sweep; roxy.fuse where it "
             "is one piece), or mark it \"plain\": true in the plan if the real thing is exactly that shape.")
     _verify_motion(plan, motion or [], strip, touch, planned, report)
+    _stacked(boxes, plain, report)
+    fresh = sorted(m for m, aged in (materials or {}).items() if not aged)
+    if fresh:
+        report.warnings.append(
+            f"Factory-fresh materials: {', '.join(fresh[:MAX_LISTED])}{' ...' if len(fresh) > MAX_LISTED else ''}. "
+            "Nothing in use looks new: roxy.weather(obj) adds uneven colour, dirt in corners and near the floor, "
+            "scuffed edges and dust over the existing material and textures (age \"used\" by default; "
+            "\"new\" only when new is the point, like a showroom).")
     if plan.get("features"):
         report.notes.append("Confirm each identifying feature close up with look, and fix any that doesn't "
                             "read: " + "; ".join(plan["features"]) + ".")

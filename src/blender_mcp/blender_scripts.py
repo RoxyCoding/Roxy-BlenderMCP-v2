@@ -602,13 +602,16 @@ if root is None:
     return {"error": "no object called " + ARGS["name"]}
 dg = bpy.context.evaluated_depsgraph_get()
 to_local = root.matrix_world.inverted()
-parts, shapes, primitives, meshes = {}, {}, [], {}
+parts, shapes, primitives, meshes, materials = {}, {}, [], {}, {}
 for x in root.children_recursive:
     if x.type not in {"MESH", "CURVE", "SURFACE", "FONT", "META", "CURVES"}:
         continue
     kind = primitive(x.data) if x.type == "MESH" else None
     if kind:
         primitives.append([x.name, kind])
+    for slot in getattr(x, "material_slots", []):
+        if slot.material is not None:
+            materials[slot.material.name] = slot.material.get("roxy_weathered")
     ev = x.evaluated_get(dg)
     pts = [to_local @ (ev.matrix_world @ Vector(c)) for c in ev.bound_box]
     parts[x.name] = [[round(min(p[i] for p in pts), 4) for i in range(3)],
@@ -688,7 +691,7 @@ for part in plan.get("parts", []):
                    "hits": [[g, o, round(t, 3)] for (g, o), t in hits.items()],
                    "ground": [[g, round(t, 3)] for g, t in ground.items()]})
 return {"plan": root.get("roxy_plan"), "parts": parts, "gaps": gaps, "primitives": primitives,
-        "motion": motion}
+        "motion": motion, "materials": materials}
 '''
 
 

@@ -103,6 +103,12 @@ real thing from something like it:
   separate where the real thing is assembled, and the joint shows how (seam, gap, fastener).
 - **Profiles, not stacks.** A moulding, a frame, a counter edge, a step nosing, a rail is one
   `roxy.extrude_profile` or `roxy.sweep` with its real section, never a pile of thin boxes.
+- **Shape the part, don't pile on it.** A feature of one piece is modelled into that piece, not
+  laid on it as another thin block: a door's frame and panel are `roxy.inset` on its face
+  (recessed or raised field), a lip, plinth, boss or button is `roxy.extrude` grown from the face,
+  a recess, slot or groove is `roxy.cut`, a moulded detail of several shapes is `roxy.fuse`d.
+  Stack separate objects only where the real thing is separate pieces (an applied badge, a veneer,
+  a fitted panel, a decal). The check and verify flag thin plates lying on another part's face.
 - **Round things have a side profile.** A bottle has a shoulder, neck and lip; a cup a foot and
   a rim; a table leg turned on a lathe has beads and a taper; a tyre has a bulging sidewall and
   tread; a lamp shade flares. Draw that profile (`roxy.lathe`) instead of a cylinder.
@@ -127,6 +133,9 @@ form.
 | Legs, posts, plinths and casings that taper | `roxy.rounded_box(top=..., bottom=...)` |
 | Bodies whose section changes along their height (appliances, car bodies, seats, handles, non-round bottles) | `roxy.loft` through rounded-rectangle sections |
 | One-piece parts made from several shapes (castings, mouldings, welded frames, carved blocks) | build the pieces, then `roxy.fuse` them with a fillet |
+| A frame round a recessed or raised field (door panels, drawer fronts, screens in bezels, trays) | `roxy.inset(obj, side, border, depth)` on the part's face |
+| Lips, plinths, bosses, buttons, steps that grow out of a face | `roxy.extrude(obj, side, distance, border)` |
+| Recesses, slots, grooves, holes | `roxy.cut` with a cutter box or cylinder |
 | Boards and walls with holes (doors, windows, vents, displays) | `roxy.panel_with_openings`, or `roxy.cut` |
 | Straight rods, tubes and pipes | `roxy.cylinder` |
 | Round legs, feet, knobs, caps, columns (rounded ends, tapers) | `roxy.rounded_cylinder` |
@@ -177,10 +186,12 @@ that is still a bare primitive (box, straight prism or cylinder, cone, sphere) a
 plain, and lists the identifying features to confirm close up. Move or turn the whole subject
 only through its empty.
 
-### 8. Surface, light, review
+### 8. Surface, age, light, review
 
 UVs (`roxy.uv_world_box` for hard-surface and architecture), materials (`get_guide("materials")`,
-`get_guide("surface-realism")`), then `get_guide("quality-review")`.
+`get_guide("surface-realism")`), then age them: nothing in use is new, so every part gets
+`roxy.weather(obj)` ("used" by default, over its textures; "new" only when new is the point).
+Then `get_guide("quality-review")`.
 
 ## Helpers
 
@@ -188,13 +199,15 @@ Tested on Blender 5.1. They build mesh data directly (no viewport or mode switch
 scale at 1, and put the origin at the bottom centre so `location` is where the part stands.
 Most parts get `roxy.finish()`: a small angle-limited bevel and weighted normals.
 
-The addon provides these as `roxy.<name>` inside execute_blender_code (addon protocol 18+), so call them directly - don't paste or redefine them. If `roxy` is undefined, the Blender addon is outdated: get_addon_status says how to update it. `roxy.rounded_box`, `roxy.rounded_cylinder`, `roxy.loft` and `roxy.fuse` need protocol 22.
+The addon provides these as `roxy.<name>` inside execute_blender_code (addon protocol 18+), so call them directly - don't paste or redefine them. If `roxy` is undefined, the Blender addon is outdated: get_addon_status says how to update it. `roxy.rounded_box`, `roxy.rounded_cylinder`, `roxy.loft`, `roxy.fuse`, `roxy.inset`, `roxy.extrude`, `roxy.set_pivot`, `roxy.carry` and `roxy.limit_motion` need protocol 23.
 
 - `roxy.finish(obj, bevel=0.002, segments=2)` - Rounded edges that catch highlights, with clean shading.
 - `roxy.box(name, size, location=(0, 0, 0), bevel=0.002, parent=None, collection=None, origin='bottom')` - A box of real size (x, y, z metres) with scale 1.
 - `roxy.rounded_box(name, size, radius, location=(0, 0, 0), top=None, bottom=None, bottom_radius=None, segments=6, parent=None, collection=None)` - A box with real rounded edges (radius in metres): size is the part at its widest, top/bottom=(width, depth) narrow that end into a taper, bottom_radius=0 keeps the bottom edges square where it sits flush.
 - `roxy.rounded_cylinder(name, radius, depth, edge, location=(0, 0, 0), top=None, bottom=None, segments=48, parent=None, collection=None)` - A turned round part with rounded end edges (edge in metres): radius is the part at its widest, top/bottom (a radius) narrow that end into a taper.
 - `roxy.loft(name, sections, location=(0, 0, 0), segments=6, bevel=0.002, parent=None, collection=None)` - One surface through rounded-rectangle sections from bottom to top, each (z, width, depth, corner_radius) or (z, width, depth, corner_radius, x, y): bodies whose section changes along their height. Both ends are capped flat.
+- `roxy.inset(obj, side, border, depth=0.0)` - Shape the flat face on side ("front", "back", "left", "right", "top", "bottom") into a frame `border` metres wide round a field pushed in by depth (recess) or out by a negative depth (raised panel). Round corners stay round.
+- `roxy.extrude(obj, side, distance, border=0.0)` - Grow the flat face on side out by distance (a lip, plinth, cap); with border, only a smaller area inset by border rises (a boss, a button, a step).
 - `roxy.fuse(obj, parts, fillet=None)` - Merge parts into obj as one continuous body (boolean union) and delete them; fillet (metres) rounds the seams where they meet, as on a casting or weld.
 - `roxy.cylinder(name, radius, depth, location=(0, 0, 0), segments=32, bevel=0.001, parent=None, collection=None, origin='bottom')` - An upright cylinder (legs, poles, pipes, knobs).
 - `roxy.extrude_profile(name, points, depth, location=(0, 0, 0), bevel=0.001, parent=None, collection=None)` - Extrude a closed 2D outline [(x, z), ...] in metres along +Y by depth: mouldings, brackets, frames, signs, anything with a custom silhouette.

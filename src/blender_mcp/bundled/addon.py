@@ -40,7 +40,7 @@ bl_info = {
 }
 
 # Keep in sync with blender_mcp.addon_manager.EXPECTED_ADDON_PROTOCOL_VERSION.
-ADDON_PROTOCOL_VERSION = 22
+ADDON_PROTOCOL_VERSION = 23
 
 _scene_version = 0
 
@@ -4157,11 +4157,13 @@ def loft(name, sections, location=(0, 0, 0), segments=6, bevel=0.002, parent=Non
     tapered legs, casings with draft and rounded corners, plinths, handles, cushions, car and
     appliance bodies, bottles that aren't round. Both ends are capped flat."""
     bm = bmesh.new()
-    rings = []
+    rings, sharp = [], []
     for s in sections:
         z, w, d, r = s[:4]
         ox, oy = (s[4], s[5]) if len(s) > 5 else (0.0, 0.0)
         rings.append([bm.verts.new((ox + x, oy + y, z)) for x, y in _rounded_rect(w, d, r, segments)])
+        if r < 2e-4:
+            sharp.append(rings[-1])
     n = len(rings[0])
     for lower, upper in zip(rings, rings[1:]):
         for i in range(n):
@@ -4170,6 +4172,9 @@ def loft(name, sections, location=(0, 0, 0), segments=6, bevel=0.002, parent=Non
     bm.faces.new(list(reversed(rings[0])))
     bm.faces.new(rings[-1])
     bmesh.ops.remove_doubles(bm, verts=bm.verts, dist=1e-6)
+    # A section with square corners keeps one vertex per corner, not a crumpled arc of them.
+    for ring in sharp:
+        bmesh.ops.remove_doubles(bm, verts=[v for v in ring if v.is_valid], dist=3e-4)
     bmesh.ops.recalc_face_normals(bm, faces=bm.faces)
     return finish(_object(name, bm, location, parent, collection), bevel)
 
@@ -4218,6 +4223,78 @@ def rounded_cylinder(name, radius, depth, edge, location=(0, 0, 0), top=None, bo
         profile.append((rt - e + e * math.cos(a), depth - e + e * math.sin(a)))
     profile.append((0.0, depth))
     return lathe(name, profile, segments, location, parent=parent, collection=collection)
+
+
+_SIDES = {"front": (0, -1, 0), "back": (0, 1, 0), "left": (-1, 0, 0), "right": (1, 0, 0),
+          "top": (0, 0, 1), "bottom": (0, 0, -1)}
+
+
+def _side_faces(bm, side):
+    """The faces of the outermost flat plane on one side of the mesh (in the object's axes)."""
+    n = Vector(_SIDES[side] if isinstance(side, str) else side).normalized()
+    faces = [f for f in bm.faces if f.normal.dot(n) > 0.999]
+    if not faces:
+        raise ValueError(f"no flat face on the {side} side")
+    far = max(f.calc_center_median().dot(n) for f in faces)
+    return [f for f in faces if abs(f.calc_center_median().dot(n) - far) < 1e-4], n
+
+
+def _shrink(bm, faces, n, border):
+    """Inset a flat region by border on every side: a thin inset, then its inner outline scaled
+    in towards the middle. Unlike an even-offset inset this never folds round corners whose
+    radius is smaller than the border - they come out as smaller rounded corners."""
+    bmesh.ops.inset_region(bm, faces=faces, thickness=1e-5, depth=0.0, use_even_offset=True)
+    verts = list({v for f in faces for v in f.verts})
+    u = Vector((1, 0, 0)) if abs(n.x) < 0.9 else Vector((0, 1, 0))
+    u = (u - n * u.dot(n)).normalized()
+    w = n.cross(u)
+    lo_u, hi_u = min(v.co.dot(u) for v in verts), max(v.co.dot(u) for v in verts)
+    lo_w, hi_w = min(v.co.dot(w) for v in verts), max(v.co.dot(w) for v in verts)
+    if hi_u - lo_u <= 2 * border or hi_w - lo_w <= 2 * border:
+        raise ValueError(f"a border of {border} m leaves nothing of a face {hi_u - lo_u:.3f} x {hi_w - lo_w:.3f} m")
+    cu, cw = (lo_u + hi_u) / 2, (lo_w + hi_w) / 2
+    fu = (hi_u - lo_u - 2 * border) / (hi_u - lo_u)
+    fw = (hi_w - lo_w - 2 * border) / (hi_w - lo_w)
+    for v in verts:
+        du, dw = v.co.dot(u) - cu, v.co.dot(w) - cw
+        v.co += u * (du * fu - du) + w * (dw * fw - dw)
+
+
+def _reshape(obj, edit):
+    bm = bmesh.new(); bm.from_mesh(obj.data)
+    edit(bm)
+    bmesh.ops.recalc_face_normals(bm, faces=bm.faces)
+    bm.to_mesh(obj.data); bm.free()
+    obj.data.update()
+    return obj
+
+
+def inset(obj, side, border, depth=0.0):
+    """Shape a face into the part itself instead of laying boards on it: leave a frame `border`
+    metres wide round the flat face on `side` ("front", "back", "left", "right", "top",
+    "bottom", or a direction) and push its middle in by depth (a recessed panel, a screen in its
+    bezel, a drawer front's field, a tray) or out with a negative depth (a raised panel)."""
+    def edit(bm):
+        faces, n = _side_faces(bm, side)
+        _shrink(bm, faces, n, border)
+        verts = {v for f in faces for v in f.verts}
+        bmesh.ops.translate(bm, verts=list(verts), vec=-n * depth)
+    return _reshape(obj, edit)
+
+
+def extrude(obj, side, distance, border=0.0):
+    """Grow the part out of its own face instead of stacking another block on it: push the flat
+    face on `side` out by distance - a lip, a plinth, a cap, a boss - after first insetting it
+    by border so a smaller area rises from the face (a button, a raised badge, a step)."""
+    def edit(bm):
+        faces, n = _side_faces(bm, side)
+        if border > 0:
+            _shrink(bm, faces, n, border)
+        ext = bmesh.ops.extrude_face_region(bm, geom=faces)
+        bmesh.ops.delete(bm, geom=faces, context="FACES")
+        moved = [g for g in ext["geom"] if isinstance(g, bmesh.types.BMVert)]
+        bmesh.ops.translate(bm, verts=moved, vec=n * distance)
+    return _reshape(obj, edit)
 
 
 def fuse(obj, parts, fillet=None):
@@ -4325,23 +4402,92 @@ def add_layer(dst, src, fac, scale=1.0):
     mix = nt.nodes.new("ShaderNodeMixShader")
     nt.links.new(fac, mix.inputs[0]); nt.links.new(below, mix.inputs[1]); nt.links.new(bsdf.outputs[0], mix.inputs[2])
     nt.links.new(mix.outputs[0], out.inputs["Surface"])
+    dst["roxy_weathered"] = dst.get("roxy_weathered") or "custom"
     return mix
 
-def grime(mat, fac, color=(0.05, 0.04, 0.03, 1.0), roughness=0.9):
-    """Darken and roughen the base material where fac is 1, without a second texture."""
+def grime(mat, fac, color=(0.05, 0.04, 0.03, 1.0), roughness=0.9, blend="MIX"):
+    """Darken and roughen the base material where fac is 1, without a second texture. Whatever
+    feeds Base Color and Roughness (an image texture too) stays underneath; blend "MULTIPLY"
+    tints it instead of covering it."""
     nt = mat.node_tree
-    bsdf = next(n for n in nt.nodes if n.type == "BSDF_PRINCIPLED")
-    for name, value, kind in (("Base Color", color, "RGBA"), ("Roughness", roughness, "FLOAT")):
-        target = bsdf.inputs[name]
-        mix = nt.nodes.new("ShaderNodeMix"); mix.data_type = kind
-        ins = [s for s in mix.inputs if s.enabled]          # Factor, A, B for this data type
-        nt.links.new(fac, ins[0])
-        if target.is_linked:
-            nt.links.new(target.links[0].from_socket, ins[1])
-        else:
-            ins[1].default_value = target.default_value
-        ins[2].default_value = value
-        nt.links.new(next(s for s in mix.outputs if s.enabled), target)
+    for bsdf in [n for n in nt.nodes if n.type == "BSDF_PRINCIPLED"]:
+        for name, value, kind in (("Base Color", color, "RGBA"), ("Roughness", roughness, "FLOAT")):
+            if value is None:
+                continue
+            target = bsdf.inputs[name]
+            mix = nt.nodes.new("ShaderNodeMix"); mix.data_type = kind
+            if kind == "RGBA":
+                mix.blend_type = blend
+            ins = [s for s in mix.inputs if s.enabled]          # Factor, A, B for this data type
+            nt.links.new(fac, ins[0])
+            if target.is_linked:
+                nt.links.new(target.links[0].from_socket, ins[1])
+            else:
+                ins[1].default_value = target.default_value
+            ins[2].default_value = value
+            nt.links.new(next(s for s in mix.outputs if s.enabled), target)
+    mat["roxy_weathered"] = mat.get("roxy_weathered") or "custom"
+
+def _scaled(nt, mask, amount):
+    mul = nt.nodes.new("ShaderNodeMath"); mul.operation = "MULTIPLY"; mul.use_clamp = True
+    nt.links.new(mask, mul.inputs[0]); mul.inputs[1].default_value = amount
+    return mul.outputs["Value"]
+
+def _patches(nt, scale, seed):
+    """Large soft patches across the surface, 0..1: uneven fading, staining, handling."""
+    coord = nt.nodes.new("ShaderNodeTexCoord")
+    noise = nt.nodes.new("ShaderNodeTexNoise")
+    noise.inputs["Scale"].default_value = scale; noise.inputs["Detail"].default_value = 4
+    if "W" in noise.inputs:
+        noise.noise_dimensions = "4D"; noise.inputs["W"].default_value = seed
+    nt.links.new(coord.outputs["Object"], noise.inputs["Vector"])
+    return _ramp(nt, noise.outputs["Fac"], 0.35, 0.75)
+
+def _near_floor(nt, height):
+    """1 at the floor (world z 0) fading to 0 at height metres: kick marks, mop splash, damp."""
+    geo = nt.nodes.new("ShaderNodeNewGeometry")
+    xyz = nt.nodes.new("ShaderNodeSeparateXYZ")
+    nt.links.new(geo.outputs["Position"], xyz.inputs["Vector"])
+    return _invert(nt, _ramp(nt, xyz.outputs["Z"], 0.0, height))
+
+# How far each age goes: (uneven colour, crevice dirt, edge scuffs, dust on top).
+AGES = {"new": (0.15, 0.0, 0.0, 0.0), "used": (0.45, 0.6, 0.5, 0.2),
+        "old": (0.6, 0.8, 0.7, 0.5), "neglected": (0.8, 1.0, 0.9, 0.9)}
+
+def weather(obj, age="used", seed=0):
+    """Give obj's materials a history on top of what they already are - image textures included:
+    uneven colour and roughness, dirt in corners and seams, scuffed edges, dust on top. age is
+    "new" (only slight unevenness), "used" (the default for anything in daily life), "old" or
+    "neglected". Distances follow the object's size. A material is weathered once; returns the
+    materials changed. Bake before exporting to a game engine (the masks are render-time)."""
+    var, dirt, edges, dust = AGES[age]
+    size = max(min(d for d in obj.dimensions if d > 0), 0.01) if any(obj.dimensions) else 0.1
+    changed = []
+    for slot in obj.material_slots:
+        mat = slot.material
+        if mat is None or mat.node_tree is None or mat.get("roxy_weathered"):
+            continue
+        nt = mat.node_tree
+        if not any(n.type == "BSDF_PRINCIPLED" for n in nt.nodes):
+            continue
+        # The masks come out soft; stretching their lower half makes the marks read at a glance.
+        strong = lambda mask, amount: _scaled(nt, _ramp(nt, mask, 0.0, 0.5), amount)
+        grime(mat, _scaled(nt, _patches(nt, 3.0 / max(size, 0.05) ** 0.5, seed), var * 0.7),
+              color=(0.55, 0.52, 0.48, 1.0), roughness=None, blend="MULTIPLY")
+        grime(mat, _scaled(nt, _patches(nt, 6.0, seed + 7), var * 0.5), color=None, roughness=0.75)
+        if dirt:
+            grime(mat, strong(crevice_dirt_mask(mat, distance=min(0.1, size * 0.4), scale=15), dirt * 0.8),
+                  color=(0.07, 0.06, 0.045, 1.0), roughness=0.85)
+            low = _breakup(nt, _near_floor(nt, 0.12), 12, 0.7)
+            grime(mat, _scaled(nt, low, dirt * 0.5), color=(0.12, 0.1, 0.08, 1.0), roughness=0.8)
+        if edges:
+            grime(mat, strong(edge_wear_mask(mat, width=min(0.01, size * 0.05), scale=40), edges * 0.7),
+                  color=(0.55, 0.53, 0.5, 1.0), roughness=0.65, blend="SCREEN")
+        if dust:
+            grime(mat, strong(top_dust_mask(mat), dust * 0.8), color=(0.5, 0.48, 0.45, 1.0), roughness=1.0)
+        mat["roxy_weathered"] = age
+        changed.append(mat.name)
+    return changed
 
 
 # --- environment-art ---

@@ -922,7 +922,8 @@ async def model_plan(
         if not checked:
             return f"Error: {name} has no plan. Build it with model_plan(action=\"build\") first."
         return model_plans.verify(checked, state.get("parts") or {}, state.get("gaps"),
-                                  state.get("primitives"), state.get("motion")).text(
+                                  state.get("primitives"), state.get("motion"),
+                                  state.get("materials")).text(
             f"{name} against its plan")
     except Exception as e:
         if "name 'roxy' is not defined" in str(e) or _addon_lacks(e):

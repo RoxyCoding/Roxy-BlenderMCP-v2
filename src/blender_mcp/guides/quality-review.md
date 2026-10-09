@@ -47,7 +47,8 @@ history, every light has a reason, and nothing gives away that it was assembled 
 
 **Surface**
 - Material variation: no large area of one flat colour or uniform roughness.
-- Wear and history: edges worn, crevices dirty, horizontal surfaces dusty, wet areas stained,
+- Wear and history: not factory-new unless that is the point (`model_plan(action="verify")` lists
+  materials never aged); edges worn, crevices dirty, horizontal surfaces dusty, wet areas stained,
   appropriate to the object's age and use.
 - Texture scale: texel density consistent between neighbours; no visibly repeating tiles on large
   surfaces; no stretched UVs.
@@ -85,7 +86,8 @@ history, every light has a reason, and nothing gives away that it was assembled 
 | Looks like boxes stuck together | Give each part its real form: taper (`roxy.rounded_box(top=/bottom=)`), real edge radius, crown or curve (`roxy.loft`), profiles (`roxy.extrude_profile`, `roxy.sweep`); `roxy.fuse` what is one piece in reality (modeling guide, step 4) |
 | Plastic look everywhere | Vary roughness with a texture or noise; real materials from Poly Haven |
 | One flat colour per object | Poly Haven texture, or noise/AO-driven colour variation |
-| Spotless surfaces | Edge wear, crevice dirt, dust layers (surface-realism) |
+| Spotless surfaces | `roxy.weather(obj)` on everything ("used" by default), then the object's own wear: polished handles, chipped paint, streaks (surface-realism) |
+| Thin plates stacked on a part's face (frames, panels, lips) | Shape them into the part: `roxy.inset`, `roxy.extrude`, `roxy.cut` (modeling guide, step 4) |
 | Flat, shadowless light | One strong key with real shadows; reduce the ambient/HDRI strength |
 | Everything the same brightness | Lower fill, add darks; let parts of the frame fall into shadow |
 | Clean empty void behind the subject | Background geometry, fog, an HDRI with matching content |

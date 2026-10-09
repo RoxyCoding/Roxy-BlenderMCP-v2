@@ -17,7 +17,9 @@ Nodes. The guides list them; call them instead of writing your own.
 Aim for AAA quality. Never settle for "something like it": model the specific real thing, name
 the features that identify it and get each one right, and give every part its real form - no
 boxes stuck together, no cylinder for a bottle or sphere for a head (get_guide("modeling"),
-steps 1 and 4). Before calling a scene or asset done, review it with
+steps 1 and 4). Shape features into the part they belong to (inset, extrude, cut) instead of
+stacking thin blocks on it. Nothing is factory-new by default: after materials, roxy.weather(obj)
+ages every surface over its textures ("used"; "new" only when new is the point). Before calling a scene or asset done, review it with
 get_guide("quality-review"), and report what is still weak rather than claiming it is perfect.
 
 ## Region: Japanese by default

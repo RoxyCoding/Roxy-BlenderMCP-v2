@@ -67,6 +67,28 @@ subdivision), set the Displacement node's Scale to the texture's real height ran
 bricks and stones, 2-5 mm for wood grain and plaster), and keep `mat.displacement_method = "BOTH"`.
 For small detail, or in EEVEE, the normal map is enough: unlink the displacement.
 
+## Not new: weather everything by default
+
+Real things are rarely new. Unless the subject is meant to be new (a showroom, a product shot),
+every surface gets a light history on top of its material: `roxy.weather(obj, age="used")` after
+the materials are on. It keeps whatever the material already is - Poly Haven and ambientCG image
+textures included - and layers over it: uneven colour and roughness in large soft patches, dirt
+in corners and seams, dirt and kick marks near the floor, lighter scuffs on edges and corners,
+and dust on top. Ages:
+
+| age | For |
+|---|---|
+| `"new"` | only slight unevenness: showrooms, packaging, things just installed |
+| `"used"` (default) | anything in daily life: homes, schools, offices, shops, streets |
+| `"old"` | years of use: old houses, public buildings, worn-in tools |
+| `"neglected"` | abandoned, derelict, outdoors without care |
+
+Each material is aged once (shared materials too); the strengths follow the object's size. Then
+add what is specific to the object with the layers below - handles polished by hands, rust where
+paint chipped, water streaks under a sill - which is what makes it this object's history rather
+than a filter. Look close up in rendered mode: it should read as used, not dirty. Game export
+needs the result baked to textures (below).
+
 ## Layering wear, rust, dirt and dust
 
 These helpers work on any material built of Principled BSDFs, including the ones `import_asset`
@@ -83,13 +105,14 @@ creates from Poly Haven and ambientCG textures:
   patches, not lines. Tune `width` / `distance` to the object's size and `scale` to the size of
   the patches.
 
-The addon provides these as `roxy.<name>` inside execute_blender_code (addon protocol 18+), so call them directly - don't paste or redefine them. If `roxy` is undefined, the Blender addon is outdated: get_addon_status says how to update it.
+The addon provides these as `roxy.<name>` inside execute_blender_code (addon protocol 18+), so call them directly - don't paste or redefine them. If `roxy` is undefined, the Blender addon is outdated: get_addon_status says how to update it. `roxy.weather` needs protocol 23.
 
+- `roxy.weather(obj, age="used", seed=0)` - Age every material on obj over what it already is (textures included): uneven colour and roughness, dirt in corners and near the floor, scuffed edges, dust on top. Returns the materials changed.
 - `roxy.edge_wear_mask(mat, width=0.01, breakup=0.7, scale=40)` - Convex edges and corners: rays cast inside the mesh hit nearby walls there.
 - `roxy.crevice_dirt_mask(mat, distance=0.1, breakup=0.5, scale=15)` - Corners, seams and contact areas, where dirt collects.
 - `roxy.top_dust_mask(mat, breakup=0.4, scale=8)` - Upward-facing surfaces, where dust settles.
 - `roxy.add_layer(dst, src, fac, scale=1.0)` - Blend material src (a Poly Haven rust, say) over dst where fac is 1; stacks when repeated.
-- `roxy.grime(mat, fac, color=(0.05, 0.04, 0.03, 1.0), roughness=0.9)` - Darken and roughen the base material where fac is 1, without a second texture.
+- `roxy.grime(mat, fac, color=(0.05, 0.04, 0.03, 1.0), roughness=0.9, blend="MIX")` - Darken and roughen the base material where fac is 1, without a second texture; its textures stay underneath, and blend="MULTIPLY" tints them instead of covering them.
 
 Typical stacks:
 
@@ -118,8 +141,8 @@ Age the surface for the story and keep it consistent across the frame:
 
 | State | Wear | Dirt | Dust |
 |---|---|---|---|
-| New, showroom | none; bevels only | none | none |
-| In use (homes, offices, shops) | handles, edges, floor paths | corners, around switches and handles | tops of high shelves |
+| New, showroom (`"new"`) | none; bevels only | none | none |
+| In use - the default (`"used"`) | handles, edges, floor paths | corners, around switches and handles | tops of high shelves |
 | Old, well kept | edges softened everywhere | light, in seams | light |
 | Neglected, abandoned | heavy, bare material showing | heavy, streaks from water | thick on every top |
 

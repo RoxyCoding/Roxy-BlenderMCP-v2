@@ -370,3 +370,33 @@ def test_clearance_round_a_moving_part_is_not_a_flush_mistake():
             ["Door_Head", "Door_Jamb_L", 0.0], ["Door_Head", "Door_Jamb_R", 0.0], ["Door_Handle", "Door_Leaf", 0.0]]
     warnings = model_plan.verify(plan, _built(plan), gaps, motion=_motion()).warnings
     assert not any("off flush" in w and "Leaf" in w for w in warnings), warnings
+
+
+# ------------------------------------------------------------------ shaping and ageing
+
+def _cabinet_with_frame_strips():
+    return {"name": "Cab", "purpose": "kitchen base cabinet", "size": [0.6, 0.6, 0.85],
+            "features": ["a", "b", "c"],
+            "parts": [{"name": "Body", "size": [0.6, 0.594, 0.85], "at": [0, 0.003, 0], "radius": 0.002,
+                       "rests_on": ["ground"]},
+                      {"name": "Frame_Top", "size": [0.5, 0.006, 0.05], "at": [0, -0.297, 0.7], "radius": 0.001,
+                       "rests_on": ["Body"]}]}
+
+
+def test_a_thin_plate_laid_on_a_face_should_be_shaped_into_the_part():
+    warnings = model_plan.check(_cabinet_with_frame_strips()).warnings
+    assert any(w.startswith("Frame_Top is a thin plate laid on Body's face.") for w in warnings), warnings
+    plan = _cabinet_with_frame_strips()
+    plan["parts"][1]["plain"] = True            # a real applied piece says so
+    assert not any("thin plate" in w for w in model_plan.check(plan).warnings)
+
+
+def test_verify_flags_stacked_detail_and_factory_fresh_materials():
+    plan = _cabinet_with_frame_strips()
+    actual = _built(plan)
+    actual["Cab_Badge"] = [[0.1, -0.3, 0.3], [0.15, -0.297, 0.33]]      # detail added after the plan
+    report = model_plan.verify(plan, actual, materials={"Paint": None, "Steel": "used"})
+    assert any(w.startswith("Badge is a thin plate laid on Body's face.") for w in report.warnings), report.warnings
+    assert any(w.startswith("Factory-fresh materials: Paint.") for w in report.warnings), report.warnings
+    aged = model_plan.verify(plan, actual, materials={"Paint": "new", "Steel": "custom"})
+    assert not any("Factory-fresh" in w for w in aged.warnings)
