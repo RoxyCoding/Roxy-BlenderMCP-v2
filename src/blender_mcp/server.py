@@ -102,6 +102,24 @@ def resolve_connection(cli_host=None, cli_port=None):
 CLI_HOST = None
 CLI_PORT = None
 
+def read_blender_token(port: int) -> str | None:
+    """The token the addon published for `port`, which every command must carry.
+
+    BLENDER_MCP_TOKEN wins, for a server that cannot see the addon's file
+    (Docker, another machine). Otherwise the addon writes it to
+    ~/.roxy-blender-mcp/token-<port> (or under ROXY_BLENDER_MCP_DIR) on start.
+    """
+    token = os.getenv("BLENDER_MCP_TOKEN")
+    if token:
+        return token.strip()
+    base = os.getenv("ROXY_BLENDER_MCP_DIR") or os.path.join(os.path.expanduser("~"), ".roxy-blender-mcp")
+    try:
+        with open(os.path.join(base, f"token-{port}"), encoding="utf-8") as f:
+            return f.read().strip() or None
+    except OSError:
+        return None
+
+
 _addon_handshake = None
 _addon_handshake_checked = False
 _addon_handshake_lock = threading.Lock()
@@ -115,12 +133,15 @@ class BlenderConnection:
     # Without this, a second command's response can be read as the first's, and
     # the stream stays desynced until the 180s timeout fires.
     _lock: threading.Lock = field(default_factory=threading.Lock, repr=False)
+    # Re-read on every connect: the addon makes a new token each time it starts.
+    token: str | None = field(default=None, repr=False)
 
     def connect(self, timeout: float = 180.0) -> bool:
         """Connect to the Blender addon socket server"""
         if self.sock:
             return True
-            
+
+        self.token = read_blender_token(self.port)
         try:
             self.sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
             self.sock.settimeout(timeout)
@@ -241,6 +262,8 @@ class BlenderConnection:
             "type": command_type,
             "params": params or {}
         }
+        if self.token:
+            command["auth"] = self.token
 
         try:
             # Log the command being sent

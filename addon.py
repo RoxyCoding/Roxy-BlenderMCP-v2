@@ -21,6 +21,7 @@ from bpy.props import IntProperty, BoolProperty
 import io
 from datetime import datetime
 import hashlib, hmac, base64
+import secrets
 import os.path as osp
 from collections import deque
 from urllib.parse import quote, urlencode, urlparse, urlunparse, parse_qsl
@@ -39,7 +40,7 @@ bl_info = {
 }
 
 # Keep in sync with blender_mcp.addon_manager.EXPECTED_ADDON_PROTOCOL_VERSION.
-ADDON_PROTOCOL_VERSION = 20
+ADDON_PROTOCOL_VERSION = 21
 
 _scene_version = 0
 
@@ -1117,6 +1118,60 @@ class BlenderMCPServer:
         # Live client sockets, so stop() can unblock threads parked in recv().
         self._clients = set()
         self._clients_lock = threading.Lock()
+        # Shared secret every command must carry. The socket runs arbitrary
+        # Python, so without it any local process could drive Blender. None
+        # means authentication is off (not started, or explicitly disabled).
+        self.token = None
+
+    # A command larger than this is not a real request; drop the connection
+    # instead of buffering it forever.
+    MAX_COMMAND_BYTES = 64 * 1024 * 1024
+
+    # The unfinished tail of a JSON number or literal at the end of a chunk.
+    _PARTIAL_TOKEN = re.compile(
+        r"-?\d*(\.\d*)?([eE][-+]?\d*)?|t(r(ue?)?)?|f(a(l(se?)?)?)?|n(u(ll?)?)?"
+        r"|N(aN?)?|-?I(n(f(i(n(i(ty?)?)?)?)?)?)?"
+    )
+
+    def _token_path(self):
+        """Where the MCP server finds this port's token (same user, same machine)."""
+        base = os.getenv("ROXY_BLENDER_MCP_DIR") or os.path.join(
+            os.path.expanduser("~"), ".roxy-blender-mcp"
+        )
+        return os.path.join(base, f"token-{self.port}")
+
+    def _publish_token(self):
+        if os.getenv("BLENDERMCP_ALLOW_UNAUTHENTICATED") == "1":
+            print("BlenderMCP: authentication disabled by BLENDERMCP_ALLOW_UNAUTHENTICATED=1")
+            self.token = None
+            return
+        self.token = secrets.token_urlsafe(32)
+        path = self._token_path()
+        try:
+            os.makedirs(os.path.dirname(path), mode=0o700, exist_ok=True)
+            # 0o600 so other users cannot read it; Windows ignores the mode,
+            # but the user's home folder is already private there.
+            fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+            with os.fdopen(fd, "w", encoding="utf-8") as f:
+                f.write(self.token)
+        except OSError as e:
+            print(f"BlenderMCP: could not write the auth token to {path}: {e}. "
+                  "Commands will be refused until the MCP server gets the token "
+                  "(BLENDER_MCP_TOKEN) or BLENDERMCP_ALLOW_UNAUTHENTICATED=1 is set.")
+
+    def _withdraw_token(self):
+        """Remove the token file, unless another Blender has since replaced it."""
+        if not self.token:
+            return
+        path = self._token_path()
+        try:
+            with open(path, encoding="utf-8") as f:
+                ours = f.read().strip() == self.token
+            if ours:
+                os.remove(path)
+        except OSError:
+            pass
+        self.token = None
 
     def _get_config_value(self, scene_attr, pref_attr=None, env_var=None):
         """Read config in order: addon preferences -> scene -> env var."""
@@ -1164,6 +1219,7 @@ class BlenderMCPServer:
             # handshake and then never be accept()ed - a connection that looks
             # established but is never serviced.
             self.socket.listen(5)
+            self._publish_token()
 
             # Start server thread
             self.server_thread = threading.Thread(target=self._server_loop)
@@ -1187,6 +1243,7 @@ class BlenderMCPServer:
 
         _unregister_edit_capture_handlers()
         get_edit_recorder().drain()
+        self._withdraw_token()
 
         try:
             if bpy.app.timers.is_registered(self._drain_command_queue):
@@ -1286,7 +1343,10 @@ class BlenderMCPServer:
                 break
 
             try:
-                response = self.execute_command(command)
+                if command.get("type") == "__invalid__":
+                    response = {"status": "error", "message": f"Invalid command: {command.get('error')}"}
+                else:
+                    response = self.execute_command(command)
                 response_json = json.dumps(response)
             except Exception as e:
                 print(f"Error executing command: {str(e)}")
@@ -1299,6 +1359,58 @@ class BlenderMCPServer:
                 print("Failed to send response - client disconnected")
 
         return 0.05
+
+    def _authorized(self, command):
+        if self.token is None:
+            return True
+        return hmac.compare_digest(str(command.get("auth", "")), self.token)
+
+    def _reply_error(self, client, message):
+        """Answer directly from the client thread; only before closing the connection."""
+        try:
+            client.sendall(json.dumps({"status": "error", "message": message}).encode("utf-8"))
+        except Exception:
+            pass
+
+    @staticmethod
+    def _split_commands(buffer):
+        """Parse every complete JSON command in `buffer`.
+
+        Returns (commands, leftover bytes, error). A command may arrive split
+        across recv() chunks - even mid UTF-8 character - so a truncated tail
+        is kept for the next chunk. Anything that can never become valid JSON
+        is reported as `error` and discarded.
+        """
+        try:
+            text = buffer.decode("utf-8")
+        except UnicodeDecodeError as e:
+            if e.reason != "unexpected end of data":
+                return [], b"", "not UTF-8"
+            # A character split across chunks: parse up to it, keep the rest.
+            commands, rest, error = BlenderMCPServer._split_commands(buffer[:e.start])
+            return commands, rest + buffer[e.start:], error
+
+        decoder = json.JSONDecoder()
+        commands = []
+        pos = 0
+        while True:
+            while pos < len(text) and text[pos].isspace():
+                pos += 1
+            if pos == len(text):
+                return commands, b"", None
+            if text[pos] != "{":
+                return commands, b"", "expected a JSON object"
+            try:
+                command, pos = decoder.raw_decode(text, pos)
+            except json.JSONDecodeError as e:
+                # Truncated input fails at its very end, inside a string not
+                # closed yet, or on a number/literal cut short ("tru", "1.",
+                # "-"); anything else is malformed.
+                if (e.pos >= len(text) or e.msg.startswith("Unterminated string")
+                        or BlenderMCPServer._PARTIAL_TOKEN.fullmatch(text[e.pos:])):
+                    return commands, text[pos:].encode("utf-8"), None
+                return commands, b"", e.msg
+            commands.append(command)
 
     def _handle_client(self, client):
         """Handle connected client"""
@@ -1320,22 +1432,32 @@ class BlenderMCPServer:
                         break
 
                     buffer += data
-                    try:
-                        # Try to parse command
-                        command = json.loads(buffer.decode('utf-8'))
-                        buffer = b''
-
+                    if len(buffer) > self.MAX_COMMAND_BYTES:
+                        self._reply_error(client, "Command too large")
+                        break
+                    commands, buffer, error = self._split_commands(buffer)
+                    for command in commands:
+                        if not self._authorized(command):
+                            self._reply_error(
+                                client,
+                                "Unauthorized: this command did not carry the token "
+                                "Blender published for this session. Restart or "
+                                "update the Roxy Blender MCP server; if it runs in "
+                                "Docker or on another machine, set BLENDER_MCP_TOKEN.",
+                            )
+                            return
+                        command.pop("auth", None)
                         # Hand off to the main thread. Never call
                         # bpy.app.timers.register() from here - it is not
                         # thread-safe and the callback can be silently lost.
                         print(f"Queued command: {command.get('type')}")
                         self.command_queue.put((command, client))
-                    except (json.JSONDecodeError, UnicodeDecodeError):
-                        # Incomplete data, wait for more. A multi-byte UTF-8
-                        # character can land split across a recv() chunk
-                        # boundary, which fails decode() before json.loads()
-                        # ever runs - that's incomplete data too, not garbage.
-                        pass
+                    if error:
+                        # Garbage, not a partial command: waiting for more
+                        # bytes would stall this connection for good. The
+                        # reply goes through the queue so it keeps its place
+                        # among responses to commands queued before it.
+                        self.command_queue.put(({"type": "__invalid__", "error": error}, client))
                 except socket.timeout:
                     # Expected; loop round and re-check self.running.
                     continue

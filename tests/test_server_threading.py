@@ -79,6 +79,9 @@ def _load_server_class():
         "queue": __import__("queue"),
         "traceback": __import__("traceback"),
         "os": __import__("os"),
+        "re": __import__("re"),
+        "hmac": __import__("hmac"),
+        "secrets": __import__("secrets"),
         "get_blendermcp_addon_preferences": lambda context=None: None,
         # start()/stop() drive the edit-capture handlers, which live at module
         # scope in addon.py and so are not carried in by lifting the class.
@@ -127,7 +130,7 @@ def test_client_thread_never_registers_a_timer():
     server.start()
     try:
         with socket.create_connection(("localhost", server.port), timeout=5) as client:
-            client.sendall(json.dumps({"type": "ping"}).encode())
+            client.sendall(json.dumps({"type": "ping", "auth": server.token}).encode())
 
             pump = threading.Thread(target=_pump, args=(server,), daemon=True)
             pump.start()
@@ -147,7 +150,7 @@ def test_command_is_queued_not_executed_on_client_thread():
     server.start()
     try:
         with socket.create_connection(("localhost", server.port), timeout=5) as client:
-            client.sendall(json.dumps({"type": "ping"}).encode())
+            client.sendall(json.dumps({"type": "ping", "auth": server.token}).encode())
 
             # No pump running, so nothing should execute yet.
             deadline = time.time() + 2.0
@@ -230,7 +233,7 @@ def test_restart_rebinds_port_cleanly():
     second.start()
     try:
         with socket.create_connection(("localhost", port), timeout=5) as client:
-            client.sendall(json.dumps({"type": "ping"}).encode())
+            client.sendall(json.dumps({"type": "ping", "auth": second.token}).encode())
             pump = threading.Thread(target=_pump, args=(second,), daemon=True)
             pump.start()
             client.settimeout(5)

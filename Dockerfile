@@ -18,6 +18,9 @@ ENV PATH="/app/.venv/bin:$PATH"
 # Blender runs on the host, not in the container. host.docker.internal
 # resolves to the host on Docker Desktop (macOS/Windows); on Linux pass
 # --add-host=host.docker.internal:host-gateway or use --network=host.
+# The addon only accepts commands carrying its token: pass the contents of
+# ~/.roxy-blender-mcp/token-9876 as -e BLENDER_MCP_TOKEN=..., or mount that
+# folder and point ROXY_BLENDER_MCP_DIR at it.
 ENV BLENDER_HOST=host.docker.internal \
     BLENDER_PORT=9876
 

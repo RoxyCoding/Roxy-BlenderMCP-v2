@@ -9,3 +9,14 @@ from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 ROOT_ADDON = REPO_ROOT / "addon.py"
+
+
+import pytest
+
+
+@pytest.fixture(autouse=True)
+def _isolated_token_dir(tmp_path, monkeypatch):
+    """Keep addon auth tokens out of the real ~/.roxy-blender-mcp."""
+    monkeypatch.setenv("ROXY_BLENDER_MCP_DIR", str(tmp_path / "roxy-blender-mcp"))
+    monkeypatch.delenv("BLENDER_MCP_TOKEN", raising=False)
+    monkeypatch.delenv("BLENDERMCP_ALLOW_UNAUTHENTICATED", raising=False)

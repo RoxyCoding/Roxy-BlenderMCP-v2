@@ -55,6 +55,14 @@ The app-only `scene_state(since: int = 0)` returns `{version, file, is_dirty, sc
 
 The `checkpoint` tool saves the whole .blend as a checkpoint, lists checkpoints, and rolls back to one. The assistant saves one before risky changes; you can also just ask it to ("save a checkpoint", "go back to the blockout"). Restoring first saves the current state as another checkpoint, then reloads the file and saves it back to your .blend (Blender keeps the replaced version as .blend1). Undo history is cleared by a restore. The newest 30 are kept in Blender's user `datafiles/roxy_blender_mcp/checkpoints` folder.
 
+## Authentication
+
+The addon's socket runs arbitrary Python, so it only accepts commands that carry a token. Each time the addon's server starts it writes a new random token to `~/.roxy-blender-mcp/token-<port>` (the folder can be moved with `ROXY_BLENDER_MCP_DIR`, set for both Blender and the MCP server), and the MCP server reads it whenever it connects. Nothing needs configuring when both run as the same user on the same machine.
+
+When the MCP server cannot read that file (Docker, another machine), pass the token in `BLENDER_MCP_TOKEN`. Setting `BLENDERMCP_ALLOW_UNAUTHENTICATED=1` in Blender's environment turns the check off, for third-party clients that cannot send a token.
+
+Addon protocol 21 requires the token, so update the MCP server and the addon together.
+
 ## Updating
 
 Update the checkout; clients pick up the new server the next time they start it. If the addon changed, copy it into Blender and restart Blender:
