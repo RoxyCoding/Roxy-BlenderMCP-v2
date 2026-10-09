@@ -169,6 +169,14 @@ table = roxy.assemble("Table", [top, *legs, *aprons])
   simple shapes with good materials.
 - **No hairline gaps, no floating.** Parts that touch in reality meet exactly or overlap slightly
   out of sight.
+- **Every joint is a real joint.** Ask of each part how it is fixed, and model that: a lid sits
+  on its rim or turns on a hinge the model shows; a shelf hangs from a bracket or sleeve; a bolt
+  head sits on its plate with the shank sunk into it; a pipe enters a hole, a flange or a
+  fitting; a trim strip lies flush against the face it covers. Something "near" its support is
+  floating - fixings are where a model looks careless first.
+- **Flush or clearly stepped.** Faces that line up in reality line up exactly; a deliberate
+  step (a reveal, a lip) is 10 mm or more. A side panel 2-3 mm proud of its post, or a frame a
+  few mm short of the casing, reads as a mistake.
 - **Polygon budget.** Static subjects for rendering can be dense; for Unreal Engine 5 they can
   stay detailed with Nanite (`get_guide("unreal-engine")`). Deforming subjects need evenly spaced
   quads (`get_guide("retopology")`, `get_guide("rigging")`).
@@ -179,8 +187,13 @@ table = roxy.assemble("Table", [top, *legs, *aprons])
 
 ## Checking
 
-- **Structure:** `model_plan(action="verify", name=...)` after building and after any change to
-  the parts.
+- **Structure:** `model_plan(action="verify", name=...)` after building, after adding detail and
+  after any change to the parts. It measures the real surfaces, not bounding boxes: every part,
+  detail included, must touch what holds it and connect to the structure. Fix its errors; read
+  every near miss and almost-flush warning and either close it or say why it is intended.
+- **Joints:** `look(target=[...], distance=...)` close up on every joint - hinges, brackets,
+  bolts, pipe ends, where trims meet the body - from two angles. A gap that is invisible from the
+  default distance is obvious in a close shot.
 - **Size:** read `obj.dimensions` or `get_scene_info(query=...)` against your planned dimensions.
   A 1.65 m tall cylinder named `_ScaleRef` beside the subject makes scale errors obvious in `look`;
   delete it afterwards.

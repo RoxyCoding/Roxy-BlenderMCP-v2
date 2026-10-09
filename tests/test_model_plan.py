@@ -100,6 +100,79 @@ def test_verify_catches_a_moved_part_a_missing_part_and_floating():
     assert any("Top: rests on Leg_FL but does not touch it" in e for e in errors)
 
 
+POLE = {
+    "name": "Stand", "purpose": "pole with a shelf", "size": [0.2, 0.2, 1.0],
+    "parts": [{"name": "Pole", "shape": "cylinder", "size": [0.1, 0.1, 1.0], "at": [0, 0, 0],
+               "rests_on": ["ground"]}],
+}
+
+
+def _with(base, *parts, size=None):
+    plan = copy.deepcopy(base)
+    plan["parts"] += parts
+    if size:
+        plan["size"] = size
+    return plan
+
+
+def test_a_shelf_beside_a_round_pole_is_measured_from_its_surface():
+    # The shelf's corner reaches into the pole's bounding box, but 7 mm short of the pole itself.
+    shelf = {"name": "Shelf", "size": [0.06, 0.06, 0.02], "at": [0.07, 0.07, 0.5], "rests_on": ["Pole"]}
+    errors = model_plan.check(_with(POLE, shelf)).errors
+    assert any("Shelf: rests on Pole but does not touch it (gap 7 mm)" in e for e in errors), errors
+    # Pressed against the pole's side, it touches.
+    shelf["at"] = [0.08, 0, 0.5]
+    assert not any("Shelf" in e for e in model_plan.check(_with(POLE, shelf)).errors)
+
+
+def test_parts_that_meet_only_at_an_edge_hold_nothing():
+    block = {"name": "Block", "size": [0.1, 0.1, 0.1], "at": [0.695, -0.42, 0.67], "rests_on": ["Leg_FL"]}
+    errors = model_plan.check(_with(TABLE, block)).errors
+    assert any("Block: meets Leg_FL only along an edge" in e for e in errors), errors
+
+
+def test_parts_that_almost_meet_are_flagged_in_the_plan():
+    box = {"name": "Box", "size": [0.1, 0.1, 0.1], "at": [0.71, -0.35, 0], "rests_on": ["ground"]}
+    warnings = model_plan.check(_with(TABLE, box, size=[1.4, 0.74, 0.7])).warnings
+    assert any("Leg_FL and Box are 15 mm apart" in w for w in warnings), warnings
+
+
+def test_verify_measures_real_surfaces_when_blender_reports_them():
+    actual = _built(TABLE)
+    gaps = [["Table_Top", f"Table_{n}", 0.0] for n, _, _ in LEGS]
+    assert model_plan.verify(TABLE, actual, gaps).ok
+    # An open lid's tilted box still reaches the legs; its surface stops 20 mm short.
+    gaps[0][2] = 0.02
+    errors = model_plan.verify(TABLE, actual, gaps).errors
+    assert any("Top: rests on Leg_FL but does not touch it (gap 20 mm)" in e for e in errors), errors
+
+
+def test_verify_finds_floating_detail():
+    actual = _built(TABLE)
+    actual["Table_Bolt"] = [[0.3, 0, 0.71], [0.31, 0.01, 0.72]]         # 10 mm above the top
+    actual["Table_Washer"] = [[0.5, 0, 0.75], [0.52, 0.02, 0.752]]
+    actual["Table_Nut"] = [[0.5, 0, 0.752], [0.51, 0.01, 0.76]]          # on the floating washer
+    errors = model_plan.verify(TABLE, actual).errors
+    assert any(e.startswith("Bolt: touches nothing - it floats (10 mm") for e in errors), errors
+    assert any(e.startswith("Washer: touches only Nut") for e in errors), errors
+    assert any(e.startswith("Nut: touches only Washer") for e in errors), errors
+    # Sunk into the top, the bolt is fixed.
+    actual["Table_Bolt"] = [[0.3, 0, 0.69], [0.31, 0.01, 0.705]]
+    assert not any("Bolt" in e for e in model_plan.verify(TABLE, actual).errors)
+
+
+def test_verify_warns_about_near_misses_and_faces_almost_flush():
+    actual = _built(TABLE)
+    # A trim strip 12 mm short of the top, and an apron 3 mm proud of the leg it is fixed to.
+    actual["Table_Trim"] = [[-0.6, -0.37, 0.6], [0.6, -0.36, 0.658]]
+    actual["Table_Apron"] = [[0.605, -0.33, 0.55], [0.648, 0.33, 0.6]]
+    report = model_plan.verify(TABLE, actual)
+    assert any("Trim and Top are 12 mm apart" in w or "Top and Trim are 12 mm apart" in w
+               for w in report.warnings), report.warnings
+    assert any("Leg_FL and Apron: their max x faces are 3.0 mm off flush" in w for w in report.warnings), \
+        report.warnings
+
+
 # ------------------------------------------------------------------ the tool
 
 class FakeBlender:

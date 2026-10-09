@@ -561,17 +561,23 @@ return out
 '''
 
 
-# model_plan(action="verify"): the plan stored on an assembly, and each part's
-# box in the assembly's own space (so moving or turning the whole thing is fine).
+# model_plan(action="verify"): the plan stored on an assembly, each part's box in
+# the assembly's own space (so moving or turning the whole thing is fine), and the
+# real gap between the meshes of every pair of parts whose boxes come within
+# NEAR of each other: a box says a hinged lid or a round pole touches what it only
+# comes close to, the surfaces don't. Pairs left out are further apart than NEAR.
 PLAN_STATE = r'''
-import bpy
+import bpy, bmesh
 from mathutils import Vector
+from mathutils.bvhtree import BVHTree
+NEAR = 0.05
+MAX_SAMPLES = 4000
 root = bpy.data.objects.get(ARGS["name"])
 if root is None:
     return {"error": "no object called " + ARGS["name"]}
 dg = bpy.context.evaluated_depsgraph_get()
 to_local = root.matrix_world.inverted()
-parts = {}
+parts, shapes = {}, {}
 for x in root.children_recursive:
     if x.type not in {"MESH", "CURVE", "SURFACE", "FONT", "META", "CURVES"}:
         continue
@@ -579,7 +585,41 @@ for x in root.children_recursive:
     pts = [to_local @ (ev.matrix_world @ Vector(c)) for c in ev.bound_box]
     parts[x.name] = [[round(min(p[i] for p in pts), 4) for i in range(3)],
                      [round(max(p[i] for p in pts), 4) for i in range(3)]]
-return {"plan": root.get("roxy_plan"), "parts": parts}
+    try:
+        me = ev.to_mesh()
+    except RuntimeError:
+        continue
+    if me is None:
+        continue
+    bm = bmesh.new()
+    bm.from_mesh(me)
+    ev.to_mesh_clear()
+    bm.transform(to_local @ ev.matrix_world)
+    if bm.verts and bm.faces:
+        step = max(1, len(bm.verts) // MAX_SAMPLES)
+        shapes[x.name] = (BVHTree.FromBMesh(bm), [v.co.copy() for v in bm.verts][::step])
+    bm.free()
+
+def apart(a, b):
+    return any(a[0][i] > b[1][i] + NEAR or b[0][i] > a[1][i] + NEAR for i in range(3))
+
+gaps = []
+names = sorted(shapes)
+for i, a in enumerate(names):
+    for b in names[i + 1:]:
+        if apart(parts[a], parts[b]):
+            continue
+        (ta, va), (tb, vb) = shapes[a], shapes[b]
+        if ta.overlap(tb):
+            gap = 0.0
+        else:
+            near = [t.find_nearest(v, NEAR) for t, vs in ((tb, va), (ta, vb)) for v in vs]
+            dists = [n[3] for n in near if n[0] is not None]
+            if not dists:
+                continue
+            gap = min(dists)
+        gaps.append([a, b, round(gap, 4)])
+return {"plan": root.get("roxy_plan"), "parts": parts, "gaps": gaps}
 '''
 
 

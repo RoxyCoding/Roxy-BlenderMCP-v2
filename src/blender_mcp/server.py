@@ -862,7 +862,8 @@ async def model_plan(
     - action="check", plan={...}: validate the plan; fix every error and check again.
     - action="build", name=...: build a checked plan's box and cylinder parts under an empty
       called name (each part <Name>_<Part>); then add custom parts and detail yourself.
-    - action="verify", name=...: compare what is in the scene with the plan stored on it.
+    - action="verify", name=...: compare what is in the scene with the plan stored on it, and
+      measure the real surfaces: every part, added detail too, must be fixed to what holds it.
 
     Plan (metres, relative to the subject's bottom centre):
     {"name": "Table", "purpose": "dining table for four", "size": [1.35, 0.8, 0.7],
@@ -915,7 +916,8 @@ async def model_plan(
         checked = json.loads(stored) if stored else _checked_plans.get(name)
         if not checked:
             return f"Error: {name} has no plan. Build it with model_plan(action=\"build\") first."
-        return model_plans.verify(checked, state.get("parts") or {}).text(f"{name} against its plan")
+        return model_plans.verify(checked, state.get("parts") or {}, state.get("gaps")).text(
+            f"{name} against its plan")
     except Exception as e:
         if "name 'roxy' is not defined" in str(e) or _addon_lacks(e):
             return missing_feature("model plans")

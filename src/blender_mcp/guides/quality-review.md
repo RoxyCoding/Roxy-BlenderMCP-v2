@@ -33,6 +33,9 @@ history, every light has a reason, and nothing gives away that it was assembled 
 - Edges: no perfectly sharp corners on manufactured or worn objects; bevels catch highlights
   (`get_guide("surface-realism")`).
 - Contact: everything rests on something; no floating, no intersecting; contact shadows visible.
+  `model_plan(action="verify")` passes with no near-miss warnings left unexplained.
+- Joints: every part is fixed the way the real thing is (hinge, bracket, bolt into its plate,
+  pipe into a fitting); faces meant to be flush are flush. Check each joint close up.
 
 **Surface**
 - Material variation: no large area of one flat colour or uniform roughness.
@@ -78,6 +81,8 @@ history, every light has a reason, and nothing gives away that it was assembled 
 | Tiled texture repeating on a floor | Larger texture (`min_size_m`), rotate/offset per object, blend a second texture with noise |
 | Everything perfectly sharp | Depth of field on close shots |
 | Objects floating 1 cm above the floor | Snap to the ground from the bounding box; check a low side view |
+| A lid, shelf or fitting hovering beside what should hold it | Add the hinge, bracket or fixing; sink bolts into their plate; verify again |
+| Panels a few mm proud of or short of their frame | Line the faces up exactly, or make the step a clear 10 mm+ |
 | Mixed styles (low-poly next to photoscan) | Replace the odd ones out |
 | Foreign details in a Japanese setting | Sockets, signs, plates, text, steering side (japanese-design) |
 

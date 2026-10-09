@@ -3,7 +3,8 @@
 A plan is the model's understanding of a subject as data - what it is, its
 overall size, and every part with its size, position and what holds it up -
 so a structure that can't stand (a floating part, a part outside the whole, two
-parts in one place) is caught before any geometry exists, and the built result
+parts in one place, parts that only meet at an edge or almost meet) is caught
+before any geometry exists, and the built result - its added detail included -
 can be compared against it afterwards.
 
 Coordinates are metres relative to the assembly's origin, which sits at the
@@ -13,10 +14,18 @@ axis-aligned box, like the roxy helpers' origins.
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass, field
 
 # Two parts closer than this touch. Generous enough for bevels and float noise.
 CONTACT_TOL = 0.005
+# Parts closer than this without touching almost certainly were meant to meet:
+# a shelf 1 cm from its post, a bolt hovering over its plate.
+NEAR_MISS = 0.03
+# Faces of two touching parts this close to flush, but not flush, read as a
+# careless step: a side panel standing 3 mm proud of the post it is fixed to.
+FLUSH_MIN, FLUSH_MAX = 0.001, 0.006
+MAX_LISTED = 12
 SHAPES = ("box", "cylinder", "custom")
 GROUND = "ground"
 
@@ -54,6 +63,11 @@ def touching(a: Box, b: Box, tol: float = CONTACT_TOL) -> bool:
     return all(a[0][i] <= b[1][i] + tol and b[0][i] <= a[1][i] + tol for i in range(3))
 
 
+def box_gap(a: Box, b: Box) -> float:
+    """Shortest distance between two boxes; 0 when they touch or overlap."""
+    return math.sqrt(sum(max(a[0][i] - b[1][i], b[0][i] - a[1][i], 0.0) ** 2 for i in range(3)))
+
+
 def overlap_ratio(a: Box, b: Box) -> float:
     """Shared volume as a fraction of the smaller box."""
     inter = 1.0
@@ -66,13 +80,50 @@ def overlap_ratio(a: Box, b: Box) -> float:
     return inter / min(vol(a), vol(b))
 
 
+def _separations(a: dict, b: dict) -> list[float]:
+    """How far apart two planned parts are along each independent direction (negative: they
+    overlap by that much). Boxes have three; a cylinder makes x/y one radial direction, so a
+    shelf beside a round post is measured from the post's surface, not its bounding box."""
+    ba, bb = part_box(a), part_box(b)
+    dz = max(ba[0][2] - bb[1][2], bb[0][2] - ba[1][2])
+    cyl_a, cyl_b = a.get("shape") == "cylinder", b.get("shape") == "cylinder"
+    if not (cyl_a or cyl_b):
+        return [max(ba[0][i] - bb[1][i], bb[0][i] - ba[1][i]) for i in range(2)] + [dz]
+    if cyl_a and cyl_b:
+        d = math.dist(a["at"][:2], b["at"][:2])
+        return [d - a["size"][0] / 2 - b["size"][0] / 2, dz]
+    cyl, box = (a, bb) if cyl_a else (b, ba)
+    cx, cy = cyl["at"][:2]
+    nx, ny = min(max(cx, box[0][0]), box[1][0]), min(max(cy, box[0][1]), box[1][1])
+    if (nx, ny) == (cx, cy):  # the axis is inside the box's footprint
+        inside = min(cx - box[0][0], box[1][0] - cx, cy - box[0][1], box[1][1] - cy)
+        return [-(inside + cyl["size"][0] / 2), dz]
+    return [math.dist((cx, cy), (nx, ny)) - cyl["size"][0] / 2, dz]
+
+
+def part_gap(a: dict, b: dict) -> float:
+    return math.sqrt(sum(max(s, 0.0) ** 2 for s in _separations(a, b)))
+
+
+def edge_only(a: dict, b: dict, tol: float = CONTACT_TOL) -> bool:
+    """Touching, but along a line or at a point rather than across a face: nothing can be
+    fixed there, so a part held up that way is really floating."""
+    seps = _separations(a, b)
+    return part_gap(a, b) <= tol and sum(s > -tol for s in seps) >= 2
+
+
 def _supports(part: dict) -> list[str]:
     value = part.get("rests_on") or []
     return [value] if isinstance(value, str) else list(value)
 
 
-def _structure(boxes: dict[str, Box], plan: dict, report: Report, built: bool) -> None:
-    """Supports must touch, and every part must reach the ground through them."""
+def _gap_text(gap: float) -> str:
+    return f"{gap * 1000:.0f} mm" if gap < 1 else "more than 50 mm" if math.isinf(gap) else f"{gap:.2f} m"
+
+
+def _structure(boxes: dict[str, Box], plan: dict, report: Report, built: bool, gap) -> set[str]:
+    """Supports must touch, and every part must reach the ground through them. Returns the
+    parts that do."""
     parts = {p["name"]: p for p in plan["parts"]}
     holds: dict[str, list[str]] = {}
     for name, part in parts.items():
@@ -93,10 +144,16 @@ def _structure(boxes: dict[str, Box], plan: dict, report: Report, built: bool) -
                     holds.setdefault(name, []).append(GROUND)
             elif s not in parts:
                 report.errors.append(f"{name}: rests_on {s!r}, which is not a part of the plan.")
-            elif s in boxes and not touching(boxes[name], boxes[s]):
-                gap = max(max(boxes[s][0][i] - boxes[name][1][i], boxes[name][0][i] - boxes[s][1][i]) for i in range(3))
-                report.errors.append(f"{name}: rests on {s} but does not touch it (gap {gap * 1000:.0f} mm).")
-            elif s in boxes:
+            elif s not in boxes:
+                continue
+            elif (g := gap(name, s)) > CONTACT_TOL:
+                report.errors.append(f"{name}: rests on {s} but does not touch it (gap {_gap_text(g)}). "
+                                     "Move it onto its support, or add the bracket, hinge or fixing that "
+                                     "joins them as a part.")
+            elif not built and edge_only(part, parts[s]):
+                report.errors.append(f"{name}: meets {s} only along an edge or at a corner, which holds "
+                                     "nothing. Overlap them across a face, or add the part that joins them.")
+            else:
                 holds.setdefault(name, []).append(s)
     grounded: set[str] = set()
     changed = True
@@ -111,6 +168,35 @@ def _structure(boxes: dict[str, Box], plan: dict, report: Report, built: bool) -
     for name in parts:
         if name in holds and name not in grounded:
             report.errors.append(f"{name}: its supports never reach the ground - the chain of rests_on floats.")
+    return grounded
+
+
+def _near_misses(names: list[str], gap, report: Report) -> None:
+    """Parts that come within a few centimetres of each other without touching."""
+    found = sorted((g, a, b) for i, a in enumerate(names) for b in names[i + 1:]
+                   if CONTACT_TOL < (g := gap(a, b)) <= NEAR_MISS)
+    for g, a, b in found[:MAX_LISTED]:
+        report.warnings.append(f"{a} and {b} are {_gap_text(g)} apart. Meant to meet? Close the gap. A real "
+                               "clearance (a drawer or door gap) is a few mm and the same all round.")
+    if len(found) > MAX_LISTED:
+        report.warnings.append(f"... and {len(found) - MAX_LISTED} more pairs that almost touch.")
+
+
+def _not_flush(boxes: dict[str, Box], touching_pairs, report: Report) -> None:
+    """Touching parts whose outer faces are a few mm off flush."""
+    axes = "xyz"
+    found = []
+    for a, b in touching_pairs:
+        A, B = boxes[a], boxes[b]
+        for i in range(3):
+            for side, label in ((0, "min"), (1, "max")):
+                d = abs(A[side][i] - B[side][i])
+                if FLUSH_MIN < d < FLUSH_MAX:
+                    found.append(f"{a} and {b}: their {label} {axes[i]} faces are {d * 1000:.1f} mm off "
+                                 "flush. Line them up exactly, or make the step deliberate (10 mm or more).")
+    report.warnings.extend(found[:MAX_LISTED])
+    if len(found) > MAX_LISTED:
+        report.warnings.append(f"... and {len(found) - MAX_LISTED} more faces almost flush.")
 
 
 def _overlaps(boxes: dict[str, Box], plan: dict, report: Report) -> None:
@@ -166,8 +252,11 @@ def check(plan: dict) -> Report:
     if report.errors:
         return report
 
-    _structure(boxes, plan, report, built=False)
+    by_name = {p["name"]: p for p in plan["parts"]}
+    gap = lambda a, b: part_gap(by_name[a], by_name[b])
+    _structure(boxes, plan, report, built=False, gap=gap)
     _overlaps(boxes, plan, report)
+    _near_misses(list(boxes), gap, report)
 
     lo = [min(b[0][i] for b in boxes.values()) for i in range(3)]
     hi = [max(b[1][i] for b in boxes.values()) for i in range(3)]
@@ -186,14 +275,28 @@ def check(plan: dict) -> Report:
     return report
 
 
-def verify(plan: dict, actual: dict[str, Box]) -> Report:
-    """Compare what was built (boxes in the assembly's own space) against its plan."""
+def verify(plan: dict, actual: dict[str, Box], gaps: list | None = None) -> Report:
+    """Compare what was built (boxes in the assembly's own space) against its plan.
+
+    gaps are [part, part, metres] between the real surfaces of the pairs that come close;
+    without them (an older server script) the boxes stand in for the surfaces. Detail added
+    after the plan is checked too: everything must be fixed to something that is held up.
+    """
     report = Report()
     prefix = plan["name"] + "_"
+    strip = lambda full: full[len(prefix):] if full.startswith(prefix) else full
     boxes: dict[str, Box] = {}
     for full, box in actual.items():
-        part = full[len(prefix):] if full.startswith(prefix) else full
-        boxes[part] = (tuple(box[0]), tuple(box[1]))
+        boxes[strip(full)] = (tuple(box[0]), tuple(box[1]))
+    measured: dict[frozenset, float] | None = None
+    if gaps is not None:
+        measured = {frozenset((strip(a), strip(b))): float(g) for a, b, g in gaps}
+
+    def gap(a: str, b: str) -> float:
+        if measured is None:
+            return box_gap(boxes[a], boxes[b])
+        return measured.get(frozenset((a, b)), math.inf)
+
     planned = {p["name"]: p for p in plan["parts"]}
     for name, part in planned.items():
         if name not in boxes:
@@ -211,9 +314,40 @@ def verify(plan: dict, actual: dict[str, Box]) -> Report:
         moved = max(abs(centre_g[i] - centre_w[i]) for i in range(3))
         if moved > max(0.005, 0.03 * max(size_w)):
             report.errors.append(f"{name}: sits {moved * 1000:.0f} mm from where the plan puts it.")
-    extra = [n for n in boxes if n not in planned]
+    extra = sorted(n for n in boxes if n not in planned)
     if extra:
-        report.notes.append(f"Not in the plan (detail you added?): {', '.join(sorted(extra))}.")
-    _structure({n: b for n, b in boxes.items() if n in planned}, plan, report, built=True)
+        report.notes.append(f"Not in the plan (detail you added): {', '.join(extra)}.")
+    held = _structure({n: b for n, b in boxes.items() if n in planned}, plan, report, built=True, gap=gap)
     _overlaps({n: b for n, b in boxes.items() if n in planned}, plan, report)
+
+    # Detail is held up by whatever it touches; it floats unless that leads to the structure.
+    names = list(boxes)
+    touch = {n: set() for n in names}
+    pairs = []
+    for i, a in enumerate(names):
+        for b in names[i + 1:]:
+            if gap(a, b) <= CONTACT_TOL:
+                touch[a].add(b)
+                touch[b].add(a)
+                pairs.append((a, b))
+    reached, todo = set(held), list(held)
+    while todo:
+        for n in touch[todo.pop()]:
+            if n not in reached and n not in planned:
+                reached.add(n)
+                todo.append(n)
+    if held or not planned:
+        for n in extra:
+            if n in reached:
+                continue
+            if not touch[n]:
+                near = min((gap(n, o) for o in names if o != n), default=math.inf)
+                report.errors.append(f"{n}: touches nothing - it floats ({_gap_text(near)} from the nearest "
+                                     "part). Fix it to what holds it: sink a bolt into its plate, sit a lid "
+                                     "on its rim or hinge, add the bracket a shelf hangs from.")
+            else:
+                report.errors.append(f"{n}: touches only {', '.join(sorted(touch[n]))}, which "
+                                     "never connect to the structure - the group floats.")
+    _near_misses(names, gap, report)
+    _not_flush(boxes, pairs, report)
     return report
